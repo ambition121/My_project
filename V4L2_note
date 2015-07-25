@@ -1,8 +1,8 @@
 video 4 linux 2 笔记
 
 目的：把一块板子上的摄像头采集的图像和声卡采集的声音等通过协议传输到另一块板子上或者云端，所以第一步就是视频的采集，视频怎么采集？需要什么标准？这就需要内核里的V4L2这个标准。
-/usr/src/linux/include/linux/videodev2.h
-/usr/src/linux/include/include/mediaV4L2-dev.h定义的是V4L2驱动程序的核心数据机构
+/usr/src/linux/include/linux/videodev2.h  V4L2的相关定义的一些数据结构
+/usr/src/linux/include/include/media/V4L2-dev.h 定义的是V4L2驱动程序的核心数据机构
 
 
 一般操作流程：
@@ -32,19 +32,48 @@ int cameraFd;
 cameraFd = open(“/dev/video0″, O_RDWR, 0);
 
 二.设置属性及采集方式：
-打开视频后可以对视频的一些属性进行设置，比如裁剪，缩放等。一般采用ioctl函数对设备I/O通道进行管理
+打开视频后可以对视频的一些属性进行设置，比如裁剪，缩放等（可选）。一般采用ioctl函数对设备I/O通道进行管理
 
 
-三.检查当前视频设备支持的标准
-一般使用PAL（720X576）制式的摄像头，而欧洲一般使用NTSC（720X480）
+三.检查当前视频设备属性VIDIOC_QUERYCAP
+
+int ioctl(int fd, int request, struct v4l2_capability *argp);
+
+/usr/src/linux/include/linux/videodev2.h中的数据结构 
+ 241 struct v4l2_capability {
+ 242     __u8    driver[16]; /* i.e. "bttv" */
+ 243     __u8    card[32];   /* i.e. "Hauppauge WinTV" */
+ 244     __u8    bus_info[32];   /* "PCI:" + pci_name(pci_dev) */
+ 245     __u32   version;        /* should use KERNEL_VERSION() */
+ 246     __u32   capabilities;   /* Device capabilities */
+ 247     __u32   reserved[4];
+ 248 };
 
 
-四.设置捕视频获格式
-当检测完视频设备支持的标准后，需要设置视频捕获格式
+四.设置捕视频获格式（制式和帧格式）
+制式包括两个，一般使用PAL（720X576）制式的摄像头，而欧洲一般使用NTSC（720X480）
+
+函数格式：
+int ioctl(int fd, int request, struct v4l2_fmtdesc *argp);
+int ioctl(int fd, int request, struct v4l2_format *argp);
+
+
+ 733 struct v4l2_cropcap {
+ 734     enum v4l2_buf_type      type;
+ 735     struct v4l2_rect        bounds;
+ 736     struct v4l2_rect        defrect;
+ 737     struct v4l2_fract       pixelaspect;
+ 738 };
+ 739 
+ 740 struct v4l2_crop {
+ 741     enum v4l2_buf_type      type;
+ 742     struct v4l2_rect        c;
+ 743 };
+
 
 
 五.分配内存
-捕获的视频要分配内存
+捕获的视频要分配内存（VIDIOC_REQBUFS这个命令）
 /usr/src/linux/include/linux/videodev2.h
  557 /*
  558  *  M E M O R Y - M A P P I N G   B U F F E R S
@@ -58,8 +87,490 @@ cameraFd = open(“/dev/video0″, O_RDWR, 0);
 
 
 六.获取并记录缓存的物理空间
+使用VIDIOC_REQBUFS,我们获取缓存，下一步就是通过VIDIOC_QUERYBUF命令来获取这些缓存的地址，然后使用mmap函数转换成应用程序中的绝对地址，最后把这段缓存放入缓存队列
+{
+关于采集的方式一般有两种open，read，write方式；内存映射一种方式
+read、write方式:在用户空间和内核空间不断拷贝数据，占用了大量用户内存空间，效率不高。
+
+内存映射方式：把设备里的内存映射到应用程序中的内存控件，直接处理设备内存，这是一种有效的方式。上面的mmap函数就是使用这种方式。
+}
 
 
+七.处理采集数据
+数据缓存采用FIFO的方式，当应用程序调用缓存数据时，缓存队列将最先采集到的 视频数据缓存送出，并重新采集一张视频数据，这个过程需要用到两个ioctl命令,VIDIOC_DQBUF和VIDIOC_QBUF
+
+八.关闭视频设备
+close(cameraFd)
+
+
+
+
+
+V4L摄像头获取单张图片测试程序（mmap模式）
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+
+#include <getopt.h>           
+
+#include <fcntl.h>            
+#include <unistd.h>
+#include <errno.h>
+#include <malloc.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/time.h>
+#include <sys/mman.h>
+#include <sys/ioctl.h>
+
+#include <asm/types.h>        
+#include <linux/videodev2.h>
+
+#define CLEAR(x) memset (&(x), 0, sizeof (x))
+
+struct buffer {
+        void *                  start;
+        size_t                  length;
+};
+
+static char *           dev_name        = "/dev/video0";//摄像头设备名
+static int              fd              = -1;
+struct buffer *         buffers         = NULL;
+static unsigned int     n_buffers       = 0;
+
+FILE *file_fd;
+static unsigned long file_length;
+static unsigned char *file_name;
+//////////////////////////////////////////////////////
+//获取一帧数据
+//////////////////////////////////////////////////////
+static int read_frame (void)
+{
+struct v4l2_buffer buf;
+unsigned int i;
+
+CLEAR (buf);
+buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+buf.memory = V4L2_MEMORY_MMAP;
+
+ioctl (fd, VIDIOC_DQBUF, &buf); //出列采集的帧缓冲
+
+assert (buf.index < n_buffers);
+   printf ("buf.index dq is %d,\n",buf.index);
+
+fwrite(buffers[buf.index].start, buffers[buf.index].length, 1, file_fd); //将其写入文件中
+ 
+ioctl (fd, VIDIOC_QBUF, &buf); //再将其入列
+
+return 1;
+}
+
+int main (int argc,char ** argv)
+{
+struct v4l2_capability cap;
+struct v4l2_format fmt;
+unsigned int i;
+enum v4l2_buf_type type;
+
+file_fd = fopen("test-mmap.jpg", "w");//图片文件名
+
+fd = open (dev_name, O_RDWR /* required */ | O_NONBLOCK, 0);//打开设备
+
+ioctl (fd, VIDIOC_QUERYCAP, &cap);//获取摄像头参数
+
+CLEAR (fmt);
+fmt.type                = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+fmt.fmt.pix.width       = 640;
+fmt.fmt.pix.height      = 480;
+fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
+fmt.fmt.pix.field       = V4L2_FIELD_INTERLACED;
+ioctl (fd, VIDIOC_S_FMT, &fmt); //设置图像格式
+
+file_length = fmt.fmt.pix.bytesperline * fmt.fmt.pix.height; //计算图片大小
+
+struct v4l2_requestbuffers req;
+CLEAR (req);
+req.count               = 4;
+req.type                = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+req.memory              = V4L2_MEMORY_MMAP;
+
+ioctl (fd, VIDIOC_REQBUFS, &req); //申请缓冲，count是申请的数量
+
+if (req.count < 2)
+   printf("Insufficient buffer memory\n");
+
+buffers = calloc (req.count, sizeof (*buffers));//内存中建立对应空间
+
+for (n_buffers = 0; n_buffers < req.count; ++n_buffers)
+{
+   struct v4l2_buffer buf;   //驱动中的一帧
+   CLEAR (buf);
+   buf.type        = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+   buf.memory      = V4L2_MEMORY_MMAP;
+   buf.index       = n_buffers;
+
+   if (-1 == ioctl (fd, VIDIOC_QUERYBUF, &buf)) //映射用户空间
+    printf ("VIDIOC_QUERYBUF error\n");
+
+   buffers[n_buffers].length = buf.length;
+   buffers[n_buffers].start =
+   mmap (NULL /* start anywhere */,    //通过mmap建立映射关系
+    buf.length,
+    PROT_READ | PROT_WRITE /* required */,
+    MAP_SHARED /* recommended */,
+    fd, buf.m.offset);
+
+   if (MAP_FAILED == buffers[n_buffers].start)
+    printf ("mmap failed\n");
+        }
+
+for (i = 0; i < n_buffers; ++i)
+{
+   struct v4l2_buffer buf;
+   CLEAR (buf);
+
+   buf.type        = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+   buf.memory      = V4L2_MEMORY_MMAP;
+   buf.index       = i;
+
+   if (-1 == ioctl (fd, VIDIOC_QBUF, &buf))//申请到的缓冲进入列队
+    printf ("VIDIOC_QBUF failed\n");
+}
+               
+type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+if (-1 == ioctl (fd, VIDIOC_STREAMON, &type)) //开始捕捉图像数据
+   printf ("VIDIOC_STREAMON failed\n");
+
+for (;;) //这一段涉及到异步IO
+{
+   fd_set fds;
+   struct timeval tv;
+   int r;
+
+   FD_ZERO (&fds);//将指定的文件描述符集清空
+   FD_SET (fd, &fds);//在文件描述符集合中增加一个新的文件描述符
+
+   /* Timeout. */
+   tv.tv_sec = 2;
+   tv.tv_usec = 0;
+
+   r = select (fd + 1, &fds, NULL, NULL, &tv);//判断是否可读（即摄像头是否准备好），tv是定时
+
+   if (-1 == r) {
+    if (EINTR == errno)
+     continue;
+    printf ("select err\n");
+                        }
+   if (0 == r) {
+    fprintf (stderr, "select timeout\n");
+    exit (EXIT_FAILURE);
+                        }
+
+   if (read_frame ())//如果可读，执行read_frame ()函数，并跳出循环
+   break;
+}
+
+unmap:
+for (i = 0; i < n_buffers; ++i)
+   if (-1 == munmap (buffers[i].start, buffers[i].length))
+    printf ("munmap error");
+close (fd);
+fclose (file_fd);
+exit (EXIT_SUCCESS);
+return 0;
+}
+
+
+
+
+V4L2摄像头获取单幅图片测试程序
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+
+#include <getopt.h>           
+
+#include <fcntl.h>            
+#include <unistd.h>
+#include <errno.h>
+#include <malloc.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/time.h>
+#include <sys/mman.h>
+#include <sys/ioctl.h>
+
+#include <asm/types.h>        
+#include <linux/videodev2.h>
+
+#define CLEAR(x) memset (&(x), 0, sizeof (x))
+
+struct buffer {
+        void *                  start;
+        size_t                  length;
+};
+
+static char *           dev_name        = "/dev/video0";
+static int              fd              = -1;
+struct buffer *         buffers         = NULL;
+
+FILE *file_fd;
+static unsigned long file_length;
+static unsigned char *file_name;
+
+int main (int argc,char ** argv)
+{
+struct v4l2_capability cap;
+struct v4l2_format fmt;
+
+file_fd = fopen("test.jpg", "w");
+
+fd = open (dev_name, O_RDWR /* required */ | O_NONBLOCK, 0);
+
+ioctl (fd, VIDIOC_QUERYCAP, &cap);
+
+CLEAR (fmt);
+fmt.type                = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+fmt.fmt.pix.width       = 640;
+fmt.fmt.pix.height      = 480;
+fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
+fmt.fmt.pix.field       = V4L2_FIELD_INTERLACED;
+ioctl (fd, VIDIOC_S_FMT, &fmt);
+
+file_length = fmt.fmt.pix.bytesperline * fmt.fmt.pix.height;
+
+buffers = calloc (1, sizeof (*buffers));
+
+buffers[0].length = file_length;
+buffers[0].start = malloc (file_length);
+
+for (;;)
+{
+   fd_set fds;
+   struct timeval tv;
+   int r;
+
+   FD_ZERO (&fds);
+   FD_SET (fd, &fds);
+
+   /* Timeout. */
+   tv.tv_sec = 3;
+   tv.tv_usec = 0;
+
+   r = select (fd + 1, &fds, NULL, NULL, &tv);
+
+   if (-1 == r) {
+    if (EINTR == errno)
+     continue;
+    printf ("select");
+                        }
+
+   if (0 == r) {
+    fprintf (stderr, "select timeout\n");
+    exit (EXIT_FAILURE);
+                        }
+
+   if (read (fd, buffers[0].start, buffers[0].length))
+   break;
+}
+
+fwrite(buffers[0].start, buffers[0].length, 1, file_fd);
+
+free (buffers[0].start);
+close (fd);
+fclose (file_fd);
+exit (EXIT_SUCCESS);
+return 0;
+}
+
+
+
+
+
+
+1． 控制命令 VIDIOC_ENUM_FMT      //ENUM什么意思？自己查查去
+
+功能： 获取当前视频设备支持的视频格式 。
+参数说明：参数类型为V4L2的视频格式描述符类型 struct v4l2_fmtdesc
+返回值说明： 执行成功时，函数返回值为 0；struct v4l2_fmtdesc 结构体中的 .pixelformat和 .description 成员返回当前视频设备所支持的视频格式；
+使用举例：
+-------------------------------------------------------------------------------------------------
+
+struct v4l2_fmtdesc fmt;
+       memset(&fmt, 0, sizeof(fmt));
+       fmt.index = 0;
+       fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+       while ((ret = ioctl(dev, VIDIOC_ENUM_FMT, &fmt)) == 0) {
+              fmt.index++;
+              printf("{ pixelformat = ''%c%c%c%c'', description = ''%s'' }\n",
+                      fmt.pixelformat & 0xFF, (fmt.pixelformat >> 8) & 0xFF,
+                      (fmt.pixelformat >> 16) & 0xFF, (fmt.pixelformat >> 24) & 0xFF,
+                      fmt.description);
+       }
+-------------------------------------------------------------------------------------------------------
+
+
+2． 控制命令VIDIOC_QUERYCAP        //query 和cap各代表什么意思
+
+功能： 查询视频设备的功能 ；
+参数说明：参数类型为V4L2的能力描述类型struct v4l2_capability ；
+返回值说明： 执行成功时，函数返回值为 0；函数执行成功后，struct v4l2_capability 结构体变量中的返回当前视频设备所支持的功能；例如支持视频捕获功能V4L2_CAP_VIDEO_CAPTURE、V4L2_CAP_STREAMING等。
+
+使用举例：
+-------------------------------------------------------------------------------------------------------
+struct v4l2_capability cap; 
+iret = ioctl(fd_usbcam, VIDIOC_QUERYCAP, &cap);
+if(iret < 0)
+
+{
+              printf("get vidieo capability error,error code: %d \n", errno);
+              return ;
+}
+执行完VIDIOC_QUERYCAP命令后，cap变量中包含了该视频设备的能力信息，程序中通过检查cap中的设备能力信息来判断设备是否支持某项功能
+-----------------------------------------------------------------------------------------------------
+
+
+3． 控制命令VIDIOC_S_FMT           //直接告诉你，s是set的意思
+
+功能： 设置视频设备的视频数据格式，例如设置视频图像数据的长、宽，图像格式（JPEG、YUYV格式）；
+参数说明：参数类型为V4L2的视频数据格式类型    struct v4l2_format  ；
+返回值说明： 执行成功时，函数返回值为 0；
+使用举例：
+----------------------------------------------------------------------------------------------------------
+struct v4l2_format tv4l2_format; 
+tv4l2_format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE; 
+   tv4l2_format.fmt.pix.width = img_width; 
+   tv4l2_format.fmt.pix.height = img_height; 
+   tv4l2_format.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV; 
+   tv4l2_format.fmt.pix.field = V4L2_FIELD_INTERLACED; 
+       iret = ioctl(fd_usbcam, VIDIOC_S_FMT, &tv4l2_format);
+
+注意：如果该视频设备驱动不支持你所设定的图像格式，视频驱动会重新修改struct v4l2_format结构体变量的值为该视频设备所支持的图像格式，所以在程序设计中，设定完所有的视频格式后，要获取实际的视频格式，要重新读取struct v4l2_format结构体变量。
+-----------------------------------------------------------------------------------------------------------
+
+
+
+
+
+4． 控制命令VIDIOC_REQBUFS            //我不问了，你自己问自己吧
+
+功能： 请求V4L2驱动分配视频缓冲区（申请V4L2视频驱动分配内存），V4L2是视频设备的驱动层，位于内核空间，所以通过VIDIOC_REQBUFS控制命令字申请的内存位于内核空间，应用程序不能直接访问，需要通过调用mmap内存映射函数把内核空间内存映射到用户空间后，应用程序通过访问用户空间地址来访问内核空间。
+参数说明：参数类型为V4L2的申请缓冲区数据结构体类型struct v4l2_requestbuffers  ；
+返回值说明： 执行成功时，函数返回值为 0；V4L2驱动层分配好了视频缓冲区；
+使用举例：
+
+-----------------------------------------------------------------------------------------------------
+struct v4l2_requestbuffers  tV4L2_reqbuf;
+memset(&tV4L2_reqbuf, 0, sizeof(struct v4l2_requestbuffers ));
+tV4L2_reqbuf.count = 1;    //申请缓冲区的个数
+tV4L2_reqbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE; 
+tV4L2_reqbuf.memory = V4L2_MEMORY_MMAP;
+iret = ioctl(fd_usbcam, VIDIOC_REQBUFS, &tV4L2_reqbuf);
+
+注意：VIDIOC_REQBUFS会修改tV4L2_reqbuf的count值，tV4L2_reqbuf的count值返回实际申请成功的视频缓冲区数目；
+-----------------------------------------------------------------------------------------------------
+
+
+5． 控制命令VIDIOC_QUERYBUF
+
+功能： 查询已经分配的V4L2的视频缓冲区的相关信息，包括视频缓冲区的使用状态、在内核空间的偏移地址、缓冲区长度等。在应用程序设计中通过调VIDIOC_QUERYBUF来获取内核空间的视频缓冲区信息，然后调用函数mmap把内核空间地址映射到用户空间，这样应用程序才能够访问位于内核空间的视频缓冲区。
+参数说明：参数类型为V4L2缓冲区数据结构类型    struct v4l2_buffer  ；
+返回值说明： 执行成功时，函数返回值为 0；struct v4l2_buffer结构体变量中保存了指令的缓冲区的相关信息；
+一般情况下，应用程序中调用VIDIOC_QUERYBUF取得了内核缓冲区信息后，紧接着调用mmap函数把内核空间地址映射到用户空间，方便用户空间应用程序的访问。
+使用举例：
+-------------------------------------------------------------------------------------------------------
+struct v4l2_buffer tV4L2buf; 
+memset(&tV4L2buf, 0, sizeof(struct v4l2_buffer));
+tV4L2buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE; 
+tV4L2buf.memory = V4L2_MEMORY_MMAP;  
+tV4L2buf.index = i;  // 要获取内核视频缓冲区的信息编号
+iret = ioctl(fd_usbcam, VIDIOC_QUERYBUF, &tV4L2buf);
+
+// 把内核空间缓冲区映射到用户空间缓冲区
+AppBufLength  = tV4L2buf.length;
+AppBufStartAddr = mmap(NULL /* start anywhere */ , 
+                       tV4L2buf.length, 
+                       PROT_READ | PROT_WRITE /* access privilege */ , 
+                       MAP_SHARED /* recommended */ , 
+                       fd_usbcam, tV4L2buf.m.offset)；
+ 
+上述代码在通过调用VIDIOC_QUERYBUF取得内核空间的缓冲区信息后，接着调用mmap函数把内核空间缓冲区映射到用户空间；关于mmap函数的用法，应该好好看看
+-------------------------------------------------------------------------------------------------------
+
+
+
+6． 控制命令VIDIOC_QBUF
+
+功能： 投放一个空的视频缓冲区到视频缓冲区输入队列中 ；
+参数说明：参数类型为V4L2缓冲区数据结构类型    struct v4l2_buffer ；
+返回值说明： 执行成功时，函数返回值为 0；函数执行成功后，指令(指定)的视频缓冲区进入视频输入队列，在启动视频设备拍摄图像时，相应的视频数据被保存到视频输入队列相应的视频缓冲区中。
+使用举例：
+-------------------------------------------------------------------------------------------------------
+struct v4l2_buffer tV4L2buf; 
+memset(&tV4L2buf, 0, sizeof(struct v4l2_buffer));
+tV4L2buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE; 
+tV4L2buf.memory = V4L2_MEMORY_MMAP; 
+tV4L2buf.index = i; //指令（指定）要投放到视频输入队列中的内核空间视频缓冲区的编号；
+iret = ioctl(fd_usbcam, VIDIOC_QBUF, &tV4L2buf);
+--------------------------------------------------------------------------------------------------
+
+
+
+7． 控制命令VIDIOC_STREAMON
+
+功能： 启动视频采集命令，应用程序调用VIDIOC_STREAMON启动视频采集命令后，视频设备驱动程序开始采集视频数据，并把采集到的视频数据保存到视频驱动的视频缓冲区中。
+参数说明：参数类型为V4L2的视频缓冲区类型 enum v4l2_buf_type ；
+返回值说明： 执行成功时，函数返回值为 0；函数执行成功后，视频设备驱动程序开始采集视频数据，此时应用程序一般通过调用select函数来判断一帧视频数据是否采集完成，当视频设备驱动完成一帧视频数据采集并保存到视频缓冲区中时，select函数返回，应用程序接着可以读取视频数据；否则select函数阻塞直到视频数据采集完成。Select函数的使用请读者参考相关资料。
+
+使用举例：
+----------------------------------------------------------------------------------------------------------
+enum v4l2_buf_type v4l2type = V4L2_BUF_TYPE_VIDEO_CAPTURE; 
+fd_set    fds ; 
+struct timeval   tv; 
+iret = ioctl(fd_usbcam, VIDIOC_STREAMON, &v4l2type);
+FD_ZERO(&fds); 
+FD_SET(fd_usbcam,  &fds); 
+tv.tv_sec = 2;       /* Timeout. */ 
+tv.tv_usec = 0; 
+iret = select(fd_usbcam+ 1, &fds, NULL, NULL, &tv); 
+----------------------------------------------------------------------------------------------------------
+
+
+8． 控制命令VIDIOC_DQBUF        //第二个D是删除的意思
+
+功能： 从视频缓冲区的输出队列中取得一个已经保存有一帧视频数据的视频缓冲区；
+参数说明：参数类型为V4L2缓冲区数据结构类型    struct v4l2_buffer ；
+返回值说明： 执行成功时，函数返回值为 0；函数执行成功后，相应的内核视频缓冲区中保存有当前拍摄到的视频数据，应用程序可以通过访问用户空间来读取该视频数据。（前面已经通过调用函数mmap做了用户空间和内核空间的内存映射）.
+
+使用举例：
+
+----------------------------------------------------------------------------------------------------------
+struct v4l2_buffer tV4L2buf; 
+memset(&tV4L2buf, 0, sizeof(struct v4l2_buffer));
+tV4L2buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE; 
+tV4L2buf.memory = V4L2_MEMORY_MMAP; 
+iret = ioctl(fd_usbcam, VIDIOC_DQBUF, &tV4L2buf);
+
+注释：VIDIOC_DQBUF命令结果 使从队列删除的缓冲帧信息 传给了此tVL2buf。V4L2_buffer结构体的作用就相当于申请的缓冲帧的代理，找缓冲帧的都要先问问它，通过它来联系缓冲帧，起了中间桥梁的作用。
+----------------------------------------------------------------------------------------------------------
+
+
+9． 控制命令VIDIOC_STREAMOFF
+
+功能： 停止视频采集命令，应用程序调用VIDIOC_ STREAMOFF停止视频采集命令后，视频设备驱动程序不在采集视频数据。
+参数说明：参数类型为V4L2的视频缓冲区类型 enum v4l2_buf_type ；
+返回值说明： 执行成功时，函数返回值为 0；函数执行成功后，视频设备停止采集视频数据。
+使用举例：
+----------------------------------------------------------------------------------------------------------
+enum v4l2_buf_type  v4l2type; 
+v4l2type = V4L2_BUF_TYPE_VIDEO_CAPTURE;  
+iret = ioctl(fd_usbcam, VIDIOC_STREAMOFF, &v4l2type);
+-----------------------------------------------------------------------------------------------------------
+
+以上就是Linux 视频设备驱动V4L2最常用的控制命令使用说明，通过使用以上控制命令，可以完成一幅视频数据的采集过程。V4L2更多的控制命令使用说明请参考：http://v4l2spec.bytesex.org/spec/book1.htm
 
 
 
