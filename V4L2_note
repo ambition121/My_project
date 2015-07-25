@@ -1,0 +1,68 @@
+video 4 linux 2 笔记
+
+目的：把一块板子上的摄像头采集的图像和声卡采集的声音等通过协议传输到另一块板子上或者云端，所以第一步就是视频的采集，视频怎么采集？需要什么标准？这就需要内核里的V4L2这个标准。
+/usr/src/linux/include/linux/videodev2.h
+/usr/src/linux/include/include/mediaV4L2-dev.h定义的是V4L2驱动程序的核心数据机构
+
+
+一般操作流程：
+1. 打开设备文件。 int fd=open(”/dev/video0″,O_RDWR);
+2. 取得设备的capability，看看设备具有什么功能，比如是否具有视频输入,或者音频输入输出等。VIDIOC_QUERYCAP,struct v4l2_capability
+3. 选择视频输入，一个视频设备可以有多个视频输入。VIDIOC_S_INPUT,struct v4l2_input
+4. 设置视频的制式和帧格式，制式包括PAL，NTSC，帧的格式个包括宽度和高度等。
+VIDIOC_S_STD,VIDIOC_S_FMT,struct v4l2_std_id,struct v4l2_format
+5. 向驱动申请帧缓冲，一般不超过5个。struct v4l2_requestbuffers
+6. 将申请到的帧缓冲映射到用户空间，这样就可以直接操作采集到的帧了，而不必去复制。mmap
+7. 将申请到的帧缓冲全部入队列，以便存放采集到的数据.VIDIOC_QBUF,struct v4l2_buffer
+8. 开始视频的采集。VIDIOC_STREAMON
+9. 出队列以取得已采集数据的帧缓冲，取得原始采集数据。VIDIOC_DQBUF
+10. 将缓冲重新入队列尾,这样可以循环采集。VIDIOC_QBUF
+11. 停止视频的采集。VIDIOC_STREAMOFF
+12. 关闭视频设备。close(fd);
+
+具体开发流程
+一.打开视频设备，在V4L2中，视频设备被看做一个文件。使用open函数打开这个设备
+可以使用阻塞或者非阻塞打开摄像头设备（阻塞和非阻塞的区别）
+使用非阻塞：
+int cameraFd;
+cameraFd = open(“/dev/video0″, O_RDWR | O_NONBLOCK, 0);
+
+使用阻塞：
+int cameraFd;
+cameraFd = open(“/dev/video0″, O_RDWR, 0);
+
+二.设置属性及采集方式：
+打开视频后可以对视频的一些属性进行设置，比如裁剪，缩放等。一般采用ioctl函数对设备I/O通道进行管理
+
+
+三.检查当前视频设备支持的标准
+一般使用PAL（720X576）制式的摄像头，而欧洲一般使用NTSC（720X480）
+
+
+四.设置捕视频获格式
+当检测完视频设备支持的标准后，需要设置视频捕获格式
+
+
+五.分配内存
+捕获的视频要分配内存
+/usr/src/linux/include/linux/videodev2.h
+ 557 /*
+ 558  *  M E M O R Y - M A P P I N G   B U F F E R S
+ 559  */
+ 560 struct v4l2_requestbuffers {
+ 561     __u32           count;  #也就是说在缓存队列里保持多少张帧的数量
+ 562     enum v4l2_buf_type      type;
+ 563     enum v4l2_memory        memory;
+ 564     __u32           reserved[2];
+ 565 };
+
+
+六.获取并记录缓存的物理空间
+
+
+
+
+
+
+
+
