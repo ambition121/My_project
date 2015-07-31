@@ -19,7 +19,8 @@
 #include <linux/videodev2.h>
  
 #define CLEAR(x) memset (&(x), 0, sizeof (x))
- 
+
+//定义一个结构体来映射每个缓冲帧，每个缓冲帧映射的都是一个struct buffer的一个结构体
 struct buffer {
         void *                  start;
         size_t                  length;
@@ -32,21 +33,21 @@ static unsigned int     n_buffers       = 0;
 
 #define VIDEO_WIDTH 640
 #define VIDEO_HEIGHT 480
-#define VIDEO_FORMAT V4L2_PIX_FMT_MJPEG
-                   //V4L2_PIX_FMT_JPEG
-                   //V4L2_PIX_FMT_YUYV
+//#define VIDEO_FORMAT V4L2_PIX_FMT_MJPEG
+//#define VIDEO_FORMAT  V4L2_PIX_FMT_JPEG
+#define VIDEO_FORMAT V4L2_PIX_FMT_YUYV
                    //V4L2_PIX_FMT_YVU420
                    //V4L2_PIX_FMT_RGB32
 
 
 FILE *file_fd;
-#define CAPTURE_FILE "test.jpg"
+//#define CAPTURE_FILE "test.jpg"
+#define CAPTURE_FILE "test.yuv"
 static unsigned long file_length;
 
 //////////////////////////////////////////////////////
 //获取一帧数据
 //从视频缓冲区的输出队列中取得一个已经保存有一帧视频数据的视频缓冲区
-//////////////////////////////////////////////////////
 static int read_frame (void)
 {
      struct v4l2_buffer buf;
@@ -73,10 +74,10 @@ static int read_frame (void)
  
 int main (int argc,char ** argv)
 {
-     file_fd = fopen(CAPTURE_FILE, "w");//图片文件名
+     file_fd = fopen(CAPTURE_FILE, "w");//图片文件名，先以流的方式打开我们要写入数据的文件
 
      //打开设备,获取设备的文件描述符
-     fd = open (dev_name, O_RDWR | O_NONBLOCK, 0);
+     fd = open (dev_name, O_RDWR | O_NONBLOCK, 0);//以非阻塞的方式打开摄像头
      if(fd < 0)
        {
           printf("open %s failed\n",dev_name);
@@ -91,7 +92,7 @@ int main (int argc,char ** argv)
           printf("get vidieo capability error,error code: %d \n", errno);
           exit(1);
         }
-       // Print capability infomations
+       // Print capability infomations打印设备的属性信息
           printf("\nCapability Informations:\n");
           printf("Driver Name:%s\nCard Name:%s\nBus info:%s\nDriver Version:%u.%u.%u\nCapabilities: X\n",
                       cap.driver,cap.card,cap.bus_info,
@@ -133,6 +134,9 @@ int main (int argc,char ** argv)
            if(errno==EINVAL)
            printf("not support format %s!\n",VIDEO_FORMAT);   
 */
+
+
+
      //设置视频捕获格式
      struct v4l2_format fmt;
      CLEAR (fmt);
@@ -166,7 +170,7 @@ int main (int argc,char ** argv)
        fmtdes.type=V4L2_BUF_TYPE_VIDEO_CAPTURE;
        while(ioctl(fd,VIDIOC_ENUM_FMT,&fmtdes)!=-1)
        {
-         if(fmtdes.pixelformat & fmt3.fmt.pix.pixelformat)
+         if(fmtdes.pixelformat & fmt3.fmt.pix.pixelformat)//判断我们设置的格式和本身的格式是否一直，一致就输出来
           {
             printf(" tformat:%s\n",fmtdes.description);
             break;
@@ -174,7 +178,7 @@ int main (int argc,char ** argv)
           fmtdes.index++;
        }
 ///////////////////////////////////////////////////////////////////////
-     //视频分配捕获内存
+     //向设备申请缓冲区，包括内存数量,格式,内存映射还是用户指针方式等
      struct v4l2_requestbuffers req;
      CLEAR (req);
      req.count               = 4;
@@ -182,7 +186,7 @@ int main (int argc,char ** argv)
      req.memory              = V4L2_MEMORY_MMAP;
  
 
-	 //申请缓冲，count是申请的数量位于内核空间
+	 //申请缓冲，count是申请的数量,位于内核空间
      if(ioctl (fd, VIDIOC_REQBUFS, &req) < 0)
        {
          printf("failture VIDIOC_REQBUFS\n");
@@ -199,7 +203,7 @@ int main (int argc,char ** argv)
           fprintf (stderr, "Out of memory/n");
           exit (EXIT_FAILURE);
         }
-  
+ //获取每个缓冲区的信息，映射到用户空间 
      for (n_buffers = 0; n_buffers < req.count; ++n_buffers)
          {
            struct v4l2_buffer buf;   //驱动中的一帧
@@ -255,8 +259,9 @@ int main (int argc,char ** argv)
           exit(1);
        }
 
-/////////////////////////////////////////////////////////////////////////
- for (;;) //这一段涉及到异步IO
+///////////////////////////////////
+///select函数主要看驱动是否往缓冲区写数据是否写好，写好了就调用VIDIOC_DQBUF///////////////////////////////////
+ for (;;) 
  {
    fd_set fds;
    struct timeval tv;
@@ -285,7 +290,9 @@ int main (int argc,char ** argv)
    if (read_frame ())//如果可读，执行read_frame ()函数，并跳出循环
    break;
  }
- /////// Release the resource////////////////////////////////////////////////////  
+
+
+ ///////释放申请的资源 Release the resource////////////////////////////////////////////////////  
    unsigned int ii;
     for (ii = 0; ii < n_buffers; ++ii)
    if (-1 == munmap (buffers[ii].start, buffers[ii].length))   
