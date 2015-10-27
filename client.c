@@ -23,7 +23,7 @@
 #include <fcntl.h>
 #include <signal.h>
 
-#define BUFFER_SIZE 2048
+#define BUFFER_SIZE 2048 //message mode
 #define MAXBUF 100
 int check_flow = 0; //Define a global variable, used to check_flow
 
@@ -87,11 +87,6 @@ int main(int argc,char *argv[])
 	fd_set rfds;
 	struct timeval tv;
 	int retval, maxfd = -1;
-
-//	sprintf(gpio_direction_name1,"/sys/class/gpio/gpio%s/direction",gpio_name1); //heartbeat
-//	sprintf(gpio_value_name1,"/sys/class/gpio/gpio%s/value",gpio_name1);         //heartbeat
-//	sprintf(gpio_direction_name2,"/sys/class/gpio/gpio%s/direction",gpio_name2);  //start stop stream
-//	sprintf(gpio_value_name2,"/sys/class/gpio/gpio%s/value",gpio_name2);         //start stop stream
 
 
 	if(argc != 3) {  
@@ -596,6 +591,37 @@ int remote(int fd)
         return 0;
 }
 
+int closeremote(int fd)
+{
+        int sockfd = fd;
+        char command[] = {0xF2,0x12,0x05,0xF1,0xFA};//faild
+        char command1[] = {0xF2,0x12,0x05,0x01,0x0A};//success
+        int err;
+        err = system(" /home/media/work/closeremote.sh ");
+        if((err == -1)){
+                send(sockfd,command,sizeof(command),0);
+                printf("system closeremote error\n");
+        }
+        else{
+                if(WIFEXITED(err)){
+                        if(0 == WEXITSTATUS(err)){
+                                printf("RUN the closeremote successful!\n");
+                                send(sockfd,command1,sizeof(command1),0);
+                        }
+                        else{
+                                printf("RUN the closeremote faild! code is:\n",WEXITSTATUS(err));
+                                send(sockfd,command,sizeof(command),0);
+                        }
+                }
+                else{
+                        printf("exit status = [%d]\n", WEXITSTATUS(err));
+                        send(sockfd,command,sizeof(command),0);
+                }
+        }
+        return 0;
+}
+
+
 //when we reach a heartbeat,the gpio is light 2 times
 int heartbeatgpio()
 {
@@ -869,7 +895,10 @@ printf("\n");
 					}
                     else if(buffer[1] == 0x11){
                         remote(sockfd);
-                    			}
+                    }
+					else if(buffer[1] == 0x12){
+						closeremote(sockfd);
+					}				
 					return 0;
 }
 
