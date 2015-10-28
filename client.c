@@ -26,6 +26,7 @@
 #define BUFFER_SIZE 2048 //message mode
 #define MAXBUF 100
 int check_flow = 0; //Define a global variable, used to check_flow
+pthread_mutex_t mutex; //ADD MUTEX,add at 1028
 
 #include<fcntl.h>  //add the gpio,1026
 #include<malloc.h>
@@ -69,8 +70,7 @@ int getcommand(char buffer[],struct circular_buffer *cbuffer,int len);
 
 int main(int argc,char *argv[])  
 {
-   
-	int sockfd=0;  
+	int sockfd = 0;
 	int len;  
 	struct sockaddr_in address;     
 	int result;  
@@ -88,7 +88,10 @@ int main(int argc,char *argv[])
 	struct timeval tv;
 	int retval, maxfd = -1;
 
-
+    if(pthread_mutex_init(&mutex,NULL) != 0 ){   //init the Mutex ,at 1028
+		printf("Init metux error.");  
+		return -1;  
+	}  
 	if(argc != 3) {  
 		printf("Usage: fileclient <address> <port>/n");
 		return 0;  
@@ -211,18 +214,18 @@ printf("len = %d\n",len);
 				else
 				{
 					sleep(3);
-                                        state_processing_fail++;
-                                        if(state_processing_fail > 10) 
-                                        {
-                                           state=START;
-                                           printf("we switch to START state because we cannot receive message from server\n");
-                                           break;
-                                        }
+                    state_processing_fail++;
+                    if(state_processing_fail > 10) 
+                    {
+                        state=START;
+                        printf("we switch to START state because we cannot receive message from server\n");
+                        break;
+                        }
 					printf("Failed to receive the message! \n");
 				}
 			}
 		    
-			if (FD_ISSET(0, &rfds))//0 represents for stdin
+/*			if (FD_ISSET(0, &rfds))//0 represents for stdin
 			{
 				bzero(buffer, MAXBUF+1);
 				fgets(buffer, MAXBUF, stdin);
@@ -247,7 +250,8 @@ printf("len = %d\n",len);
 					
 				}
 			}	
-		
+*/
+
 			state = state;//keep state on processing state	
 			break;
 	
@@ -265,9 +269,9 @@ printf("len = %d\n",len);
 				keepflag += 1;
 				if(keepflag > 10){
 					state = START;
-					printf("we switch to START state because we sent 20 times heartbeat that but the server not sent us\n");
+					printf("we switch to START state because we sent 10 times heartbeat that but the server not sent us\n");
 					keepflag = 0;
-                                        break;
+                    break;
 				}
 			}
 			
@@ -303,10 +307,16 @@ void * operation(void * arg)
 	char command[] = {0xF2,0x08,0x05,0xF1,0xF0};//faild
 	char command1[] = {0xF2,0x08,0x05,0x01,0x00};//success
 	int status;
+	int val; //used by mutex
 printf("*****************sockfd:%d\n",sockfd);
 	system(" /etc/init.d/rsyslog stop ");
 	status = system(" /home/media/work/start_stream.sh & ");
 	printf("status:%d\n",status);
+
+val = pthread_mutex_lock(&mutex);//lock the mutex,at 1028
+if(val != 0){
+	printf("lock the mutex error\n");
+}
 
 	if(status == -1){
 		send(sockfd,command,sizeof(command),0);
@@ -319,21 +329,7 @@ printf("*****************sockfd:%d\n",sockfd);
 		startstreamgpio();
 		printf("run command successful\n");	
 	}
-/*
-	else{
-		if(WIFEXITED(status))
-		{
-			send(sockfd,command1,strlen(command1)+1,0);
-			if(WEXITSTATUS(status) == 0)
-				printf("run command successful\n");
-			else
-				printf("run command fail and exit code is %d\n",WEXITSTATUS(status));
-		}
-		else
-			printf("exit status = %d\n",WEXITSTATUS(status));
-	}
-	return 0;
-*/
+pthread_mutex_unlock(&mutex);//unlock the mutex
 }
 
 
@@ -569,28 +565,28 @@ int remote(int fd)
         int err;
         err = system(" /home/media/work/remote.sh ");
         if((err == -1)){
-                send(sockfd,command,sizeof(command),0);
-                printf("system remote error\n");
+            send(sockfd,command,sizeof(command),0);
+            printf("system remote error\n");
         }
         else{
-                if(WIFEXITED(err)){
-                        if(0 == WEXITSTATUS(err)){
-                                printf("RUN the remote successful!\n");
-                                send(sockfd,command1,sizeof(command1),0);
-                        }
-                        else{
-                                printf("RUN the remote faild! code is:\n",WEXITSTATUS(err));
-                                send(sockfd,command,sizeof(command),0);
-                        }
+            if(WIFEXITED(err)){
+                if(0 == WEXITSTATUS(err)){
+						printf("RUN the remote successful!\n");
+						send(sockfd,command1,sizeof(command1),0);
                 }
                 else{
-                        printf("exit status = [%d]\n", WEXITSTATUS(err));
-                        send(sockfd,command,sizeof(command),0);
+						printf("RUN the remote faild! code is:\n",WEXITSTATUS(err));
+						send(sockfd,command,sizeof(command),0);
+                }
+            }
+            else{
+                    printf("exit status = [%d]\n", WEXITSTATUS(err));
+                    send(sockfd,command,sizeof(command),0);
                 }
         }
         return 0;
 }
-
+//close the remote
 int closeremote(int fd)
 {
         int sockfd = fd;
@@ -604,14 +600,14 @@ int closeremote(int fd)
         }
         else{
                 if(WIFEXITED(err)){
-                        if(0 == WEXITSTATUS(err)){
-                                printf("RUN the closeremote successful!\n");
-                                send(sockfd,command1,sizeof(command1),0);
-                        }
-                        else{
-                                printf("RUN the closeremote faild! code is:\n",WEXITSTATUS(err));
-                                send(sockfd,command,sizeof(command),0);
-                        }
+                    if(0 == WEXITSTATUS(err)){
+                            printf("RUN the closeremote successful!\n");
+                            send(sockfd,command1,sizeof(command1),0);
+                    }
+                    else{
+                            printf("RUN the closeremote faild! code is:\n",WEXITSTATUS(err));
+                            send(sockfd,command,sizeof(command),0);
+                    }
                 }
                 else{
                         printf("exit status = [%d]\n", WEXITSTATUS(err));
@@ -782,7 +778,7 @@ int login_c(int fd)
 	char command[40];
 //	char user[16] = {0};
 //	char passwd[16] = {0};
-	char user[16] = {"board1"};
+	char user[16] = {"board2"};
 	char passwd[16] = {"1"};
 
 	char checksum = 0x00;
@@ -912,9 +908,9 @@ void *send_gsm(void *arg);
 int sendmesg(int fd)
 {
 printf("***********************fd:%d\n",fd);
-        pthread_t tid;
+        pthread_t tid1;
         int err;
-        err = pthread_create(&tid,NULL,send_gsm,(void *)fd);//at 10.12
+        err = pthread_create(&tid1,NULL,send_gsm,(void *)fd);//at 10.12
 		if(err != 0)
 		printf("error creat");   
 }
@@ -1056,6 +1052,7 @@ printf("****************sockfd:%d\n",sockfd);
                 int len = strlen(string); ///// 
 					printf("%d\n",len); //打印剩余流量字符串长度
                 int i, j=0, k=0;
+				int val; //used by mutex,at 1028
                 for(i=0;i<len;i++){ //处理剩余流量字符串string,string是收到的剩余流量的字符串,buffer是处理后的字符串
 					if((i+1)%4 == 0){ 
 						if(string[i] != 'E' ){
@@ -1071,17 +1068,26 @@ printf("****************sockfd:%d\n",sockfd);
 				}   
                 printf("buffer is:%s\n",buffer);//打印处理后的字符串，显示剩余流量
                 free(string);
-				sprintf(comm,"%c%c%c%-12s",0xF2,0x10,0x0F,buffer);
+				sprintf(comm,"%c%c%c%-12s",0xF2,0x10,0x0F,buffer);//we make this command's length is 15
 				for( i=0;i<14;i++ )
 					checksum += comm[i];
 				comm[14] = checksum;
 				comm[15] = '\0';
 				signal(SIGPIPE, SIG_IGN);  //ignore the sigpipe,because the sigpipe will kill the whole process by default
+
+			val = pthread_mutex_lock(&mutex);//lock the mutex,at 1028
+		    if(val != 0){  
+				printf("lock the mutex error\n");  
+			}
+
 				int length = send(sockfd, comm, strlen(comm), 0);//SENT THE BUFFER TO THE SERVER
+
+			pthread_mutex_unlock(&mutex);//unlock the mutex,at 1028
 				if(length > 0){
 					printf("sent the last flow Length:%d\n",length);
-//					sleep(1800); //this 1800 is use debug
-					for(k=0;k<1800;i++){
+					sleep(2);					
+				/*
+					for(k=0;k<1800;k++){         //we use debug
 						if(check_flow == 1){
 							check_flow = 0;
 							stat = CHECK;
@@ -1089,35 +1095,47 @@ printf("****************sockfd:%d\n",sockfd);
 						}
 						else
 							sleep(1);
-					}    
+					} 
+				 */	
 
-				//	stat = DELETE;
-					stat = CHECK;   //we use the debug
+					stat = DELETE;
+				//	stat = CHECK;   //we use the debug
 					break;
 				}
 				else{
 					sleep(3);
-			//		stat = PROCESS;
-					printf("sent the last flow Length:%d\n",length);
+				printf("sent the last flow Length:%d\n",length);
 					processing_send_fail++;	
-					stat = PROCESS;
 					if(processing_send_fail > 3){
 						pthread_exit(0);
 					}
+					stat = PROCESS;
 					break;
 				}
             }
-/*
+
 		case DELETE: //AT+CMGD=1,4 ,delete all message
 			nwrite = write(portfd,buffer6,strlen(buffer6));  //delete all the message
 				printf("write the delete the all message's length is:%d\n",nwrite);
 				printf("buffer6 is:%s\n",buffer6);
+			int k = 0;
             sleep(2);
             nread = read(portfd, buff, BUFFER_SIZE);
 				printf("receive the buff Len is:%d\n", nread);
             if(buff[2] == 'O' && buff[3] == 'K'){
                 printf("delete the ALL the message is ok!!\n");
-				sleep(1800); //wait half an hour to check
+					
+				for(k=0;k<1800;k++){         //wait half an hour until we receive the command 
+                    if(check_flow == 1){
+                        check_flow = 0;
+                        stat = CHECK;
+                        break;
+                    }
+                    else{
+                        sleep(1);
+					}
+                }    
+
 				stat = CHECK;
 				break;
             }
@@ -1126,7 +1144,7 @@ printf("****************sockfd:%d\n",sockfd);
                 stat = DELETE;
 				break;
             }
-*/
+
 		default:
 			stat = OPEN;
 			break;
