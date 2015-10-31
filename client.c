@@ -23,9 +23,12 @@
 #include <fcntl.h>
 #include <signal.h>
 
+#define MIN_COMMAND_LEN 5
+#define MAX_COMMAND_LEN 10
 #define BUFFER_SIZE 2048 //message mode
 #define MAXBUF 100
 int check_flow = 0; //Define a global variable, used to check_flow
+int stop_check_message = 0; //Define a global variable, used to when the server is wrong we can stop the check message's pthread 
 pthread_mutex_t mutex; //ADD MUTEX,add at 1028
 
 #include<fcntl.h>  //add the gpio,1026
@@ -84,6 +87,7 @@ int main(int argc,char *argv[])
 	int state_logging_c,state_processing_c,state_processing_fail;
 	char buffer[MAXBUF] = {0};
 	char heartbeat[] = {0xF2,0x07,0x05,0x01,0xFF};
+//	char heartbeat[] = {0x05,0x01,0xFF,0xF2,0x06,0x05,0x02,0xFF,0xF2,0x07};
 	fd_set rfds;
 	struct timeval tv;
 	int retval, maxfd = -1;
@@ -144,7 +148,7 @@ printf("*******************sockfd:%d\n",sockfd) ;
 				}
 			printf("LOGIN SUCESS!\n");	
 
-			sendmesg(sockfd); //send the message to 10010///////////////////
+////			sendmesg(sockfd); //send the message to 10010
 
 			state = PROCESSING;	
 			state_processing_c = 0;
@@ -161,7 +165,7 @@ printf("*******************sockfd:%d\n",sockfd) ;
 			if (sockfd > maxfd)
 				maxfd = sockfd;
 
-			tv.tv_sec = 1;//if server don't send any commnad to us within 5s, then we send a hearbeat to the server
+			tv.tv_sec = 1;//if server don't send any commnad to us within 5s, then we send a hearbeat to the server///////////////////
 			tv.tv_usec = 0;
 
 			retval = select(maxfd+1, &rfds, NULL, NULL, &tv);
@@ -217,6 +221,7 @@ printf("len = %d\n",len);
                     state_processing_fail++;
                     if(state_processing_fail > 10) 
                     {
+                    	stop_check_message = 1; //0 turn 1,show the server is wrong
                         state=START;
                         printf("we switch to START state because we cannot receive message from server\n");
                         break;
@@ -225,33 +230,6 @@ printf("len = %d\n",len);
 				}
 			}
 		    
-/*			if (FD_ISSET(0, &rfds))//0 represents for stdin
-			{
-				bzero(buffer, MAXBUF+1);
-				fgets(buffer, MAXBUF, stdin);
-
-				if (!strncasecmp(buffer, "exit", 4))
-				{
-					send(sockfd, buffer, strlen(buffer)-1, 0);
-					printf("Own request to terminate the chat!\n");
-					
-				}
-
-				len = send(sockfd, buffer, strlen(buffer)-1, 0);
-				if (len < 0)
-				{
-					printf("Message failed to send ! \n");
-					
-				}
-				else
-				{	
-					if(len != 0)
-						printf("Send Mesg from stdin: %s ",buffer);
-					
-				}
-			}	
-*/
-
 			state = state;//keep state on processing state	
 			break;
 	
@@ -263,8 +241,8 @@ printf("len = %d\n",len);
 			}
 			else			
 			{
-				printf("%d\n",keepflag);
-				printf("error = %d\n",errno);//use the debug
+				printf("keepflag = %d\n",keepflag);
+		//		printf("error = %d\n",errno);//use the debug
 				printf("heartbeat send!\n");
 				keepflag += 1;
 				if(keepflag > 10){
@@ -312,12 +290,12 @@ printf("*****************sockfd:%d\n",sockfd);
 	system(" /etc/init.d/rsyslog stop ");
 	status = system(" /home/media/work/start_stream.sh & ");
 	printf("status:%d\n",status);
-
+/*
 val = pthread_mutex_lock(&mutex);//lock the mutex,at 1028
 if(val != 0){
 	printf("lock the mutex error\n");
 }
-
+*/
 	if(status == -1){
 		send(sockfd,command,sizeof(command),0);
 		printf("system error:%s\n",strerror(errno));
@@ -325,11 +303,10 @@ if(val != 0){
 	else{
 		
 		send(sockfd,command1,5,0);
-//		system(" /home/media/work/gpio1.sh ");
 		startstreamgpio();
 		printf("run command successful\n");	
 	}
-pthread_mutex_unlock(&mutex);//unlock the mutex
+//pthread_mutex_unlock(&mutex);//unlock the mutex
 }
 
 
@@ -345,18 +322,12 @@ int stop_stream(int fd)
 		send(sockfd,command,sizeof(command),0);
 		printf("system stop stream error\n");
 	}
-/*	else{
-		send(sockfd,command1,sizeof(command1),0);
-		system(" /home/media/work/gpio2.sh ");
-		printf("stop stream successful\n");
-	}
-*/
+
 	else{
 		if(WIFEXITED(err)){
 			if(0 == WEXITSTATUS(err)){
 				printf("RUN the stop stream successful!\n");
 				send(sockfd,command1,sizeof(command1),0);
-//				system(" /home/media/work/gpio2.sh ");
 				stopstreamgpio();
 			}
 			else{
@@ -552,7 +523,7 @@ int keepalive()
     	time (&timep);
     	printf("%s", ctime(&timep));
 
-	printf("HA HA HA HA the server is alive\n");
+	printf("HA HA HA HA the server is alive\n\n");
 	heartbeatgpio();
 }
 
@@ -778,7 +749,7 @@ int login_c(int fd)
 	char command[40];
 //	char user[16] = {0};
 //	char passwd[16] = {0};
-	char user[16] = {"board2"};
+	char user[16] = {"board1"};
 	char passwd[16] = {"1"};
 
 	char checksum = 0x00;
@@ -886,12 +857,12 @@ printf("\n");
 					else if (buffer[1] == 0x09){
 						stop_stream(sockfd);
 					}
-					else if(buffer[1] == 0x10){
+					else if(buffer[1] == 0x10){ //the command is to check the flow,then the globle is change
 						check_flow = 1;
 					}
-                    else if(buffer[1] == 0x11){
-                        remote(sockfd);
-                    }
+                    	else if(buffer[1] == 0x11){
+                        	remote(sockfd);
+                    	}
 					else if(buffer[1] == 0x12){
 						closeremote(sockfd);
 					}				
@@ -899,9 +870,9 @@ printf("\n");
 }
 
 /*
-   use the stat machine to wait the message,in 30',if we receive the message,we read and process the message 
-   to send to the server
-   if we not receive the machine,we send the CXLL to 10010 to check the stream
+   we can receive the message from the 10010 
+   when we receive the command ,we begin to check the flow
+   when we couldn't receive message or receive the command to check the flow a day,then we check the flow by ourselves
 */
 //send the message
 void *send_gsm(void *arg);
@@ -917,6 +888,9 @@ printf("***********************fd:%d\n",fd);
 
 void * send_gsm(void * arg)
 {
+	if(stop_check_message == 1){ //if we get the stop_check_message is 1,we exit the pthread
+		pthread_exit(0);
+	}
 	enum{
 		CONFIRM=0,
 	    STYLE=1,
@@ -925,7 +899,8 @@ void * send_gsm(void * arg)
 		CHECK=4,
 		PROCESS=5,
 		DELETE=6,
-		OPEN=7
+		OPEN=7,
+		WAIT=8
 	};
 		int stat;
         int sockfd = (int)arg;//at 10.12
@@ -941,6 +916,7 @@ printf("****************sockfd:%d\n",sockfd);
         char buffer6[20] = {'A','T','+','C','M','G','D','=','1',',','4','\r'}; //delete all the message
 
 		int processing_send_fail;
+		int checktotal = 0; //the num is that we check the mode is empty's times
 		portfd = 0;
 		stat = OPEN;
 	while(1)
@@ -1002,10 +978,12 @@ printf("****************sockfd:%d\n",sockfd);
 				sleep(2);
 				nread = read(portfd, buff, BUFFER_SIZE);
 				if(buff[2] == 'O' && buff[3] == 'K'){   //the SIM have no message that we send 10010 to receive message
-					stat = SENDNUM;
+					checktotal++; //when the mode is empty ,the checktotal is plus 1
+					stat = WAIT;
 					break;
 				}
 				else{
+					checktotal = 0;
 					stat = PROCESS;
 					processing_send_fail = 0;
 					break;
@@ -1023,7 +1001,7 @@ printf("****************sockfd:%d\n",sockfd);
 				nwrite = write(portfd,buffer4,strlen(buffer4)); //send the command that check the stream
 					printf("write the command len is:%d\n",nwrite);
 					printf("buffer4 is:%s\n",buffer4);
-				sleep(60);
+				sleep(30);
 					stat = CHECK;
 					break;
 			
@@ -1067,46 +1045,34 @@ printf("****************sockfd:%d\n",sockfd);
 					}   
 				}   
                 printf("buffer is:%s\n",buffer);//打印处理后的字符串，显示剩余流量
-                free(string);
+                free(string); //free the string's space
 				sprintf(comm,"%c%c%c%-12s",0xF2,0x10,0x0F,buffer);//we make this command's length is 15
 				for( i=0;i<14;i++ )
 					checksum += comm[i];
 				comm[14] = checksum;
 				comm[15] = '\0';
+
 				signal(SIGPIPE, SIG_IGN);  //ignore the sigpipe,because the sigpipe will kill the whole process by default
 
-			val = pthread_mutex_lock(&mutex);//lock the mutex,at 1028
+/*			val = pthread_mutex_lock(&mutex);//lock the mutex,at 1028
 		    if(val != 0){  
 				printf("lock the mutex error\n");  
 			}
-
+*/
 				int length = send(sockfd, comm, strlen(comm), 0);//SENT THE BUFFER TO THE SERVER
 
-			pthread_mutex_unlock(&mutex);//unlock the mutex,at 1028
+//			pthread_mutex_unlock(&mutex);//unlock the mutex,at 1028
 				if(length > 0){
 					printf("sent the last flow Length:%d\n",length);
-					sleep(2);					
-				/*
-					for(k=0;k<1800;k++){         //we use debug
-						if(check_flow == 1){
-							check_flow = 0;
-							stat = CHECK;
-							break;
-						}
-						else
-							sleep(1);
-					} 
-				 */	
-
+					sleep(3);					
 					stat = DELETE;
-				//	stat = CHECK;   //we use the debug
 					break;
 				}
 				else{
 					sleep(3);
 				printf("sent the last flow Length:%d\n",length);
 					processing_send_fail++;	
-					if(processing_send_fail > 3){
+					if(processing_send_fail > 3){ //if we send 3 times failed,we thintk the sockfd is close
 						pthread_exit(0);
 					}
 					stat = PROCESS;
@@ -1116,34 +1082,37 @@ printf("****************sockfd:%d\n",sockfd);
 
 		case DELETE: //AT+CMGD=1,4 ,delete all message
 			nwrite = write(portfd,buffer6,strlen(buffer6));  //delete all the message
-				printf("write the delete the all message's length is:%d\n",nwrite);
+				printf("write the delete all the message's length is:%d\n",nwrite);
 				printf("buffer6 is:%s\n",buffer6);
-			int k = 0;
             sleep(2);
             nread = read(portfd, buff, BUFFER_SIZE);
 				printf("receive the buff Len is:%d\n", nread);
             if(buff[2] == 'O' && buff[3] == 'K'){
-                printf("delete the ALL the message is ok!!\n");
-					
-				for(k=0;k<1800;k++){         //wait half an hour until we receive the command 
-                    if(check_flow == 1){
-                        check_flow = 0;
-                        stat = CHECK;
-                        break;
-                    }
-                    else{
-                        sleep(1);
-					}
-                }    
-
-				stat = CHECK;
-				break;
-            }
+                printf("delete ALL the message is ok!!\n");
+			}	
             else{
                 printf("delete message is wrong!!\n");
                 stat = DELETE;
 				break;
             }
+
+		case WAIT: //we check the message mode ,if the mode is empty ,jump it
+				if(check_flow == 1){  //when we receive the command to check flow
+					check_flow = 0;
+					stat = SENDNUM;
+					break;
+                }
+                else{
+                       sleep(30);
+                		printf("##################checktotal = %d\n",checktotal);
+                       if(checktotal > 2880){ //when we check the mode 1440 times(every time is 60',total is a day) is empty we sent the message to 10010
+                       stat = SENDNUM;
+                       break;
+                    }
+                    	stat = CHECK;
+                    	sleep(2);
+                    	break;
+                }
 
 		default:
 			stat = OPEN;
@@ -1153,20 +1122,7 @@ printf("****************sockfd:%d\n",sockfd);
 	exit(0);
 }
 
-/*
-if(len<=get_emptylen(&cbuffer)){
-						//the the empty len is enough,so write the buffer to the circular buffer
-						writecommand(buffer,&cbuffer);
-					}
-					//now get the command from the circular buffer 
-					
-					len_command=getcommand(buffer,&cbuffer,MAXBUF);	
-					while(len_command >0){		
-						process_command(buffer,sockfd);
-						len_command=getcommand(buffer,&cubffer,MAXBUF);
-					}
-*/
-
+		
 int get_emptylen(struct circular_buffer* cbuffer)
 {
 	return cbuffer->empty_len;
@@ -1190,45 +1146,105 @@ int writecommand(char buffer[],struct circular_buffer *cbuffer,int len)
 	return 0;
 }
 
-int getcommand(char buffer[],struct circular_buffer *cbuffer,int len)
+int getcommand( char buffer[], struct circular_buffer *cbuffer, int len)
 {
+	int read_pos_backup = 0;
+	
 	int i;
-	char command_len;
+	int command_len;
 	char ch;
-	int cbuflen=2*MAXBUF-cbuffer->empty_len;//the effective character on the circular buffer
-		
-	//searching the F1 sync word
-	for(i=0;i<cbuflen;i++){
-		ch=cbuffer->buf[cbuffer->read_pos];
-		if(ch==0xF1)
+	int cbuflen = 2*MAXBUF - cbuffer->empty_len;//the effective character on the circular buffer
+	if(cbuflen <= 0)				//没有有效数据；
+		return -1;
+printf("\nread_pos:%d\n",cbuffer->read_pos); 
+printf("empty_len:%d\n",cbuffer->empty_len);
+
+	//searching the sync word
+	for(i=0;i<cbuflen;i++) {
+		ch = cbuffer->buf[cbuffer->read_pos];
+		if(ch == 0xF1)	
 			break;
-		else{
+		else {
 			printf("discard this ch:%02x\n",ch);
 			cbuffer->read_pos++;
-			if(cbuffer->read_pos>=2*MAXBUF)
-				cbuffer->read_pos=0;
-			cbuffer->empty_len++;	
-		}
+			if(cbuffer->read_pos >= 2*MAXBUF)
+				cbuffer->read_pos = 0;
+			cbuffer->empty_len++;  
+			printf("empty_len1:%d\n",cbuffer->empty_len); 
+			if(cbuffer->empty_len == 2*MAXBUF)
+				return -1;
+        	}
+	}
+    
+	cbuflen = 2*MAXBUF - cbuffer->empty_len;//the effective character on the circular buffer
+	command_len = cbuffer->buf[(cbuffer->read_pos+2)%(MAXBUF*2)];//the length of this command
+	printf("command_len:%3d  cbuflen:%3d\n", command_len, cbuflen);
+	if(cbuflen < MIN_COMMAND_LEN)				//uncomplete command remains on the circular buffer
+		return -1;
+
+	if(command_len > MAX_COMMAND_LEN || command_len < MIN_COMMAND_LEN) {
+		printf("the command_len is invailed!\n");
+		printf("discard this char(command_len):%02x\n",cbuffer->buf[cbuffer->read_pos]);
+		cbuffer->read_pos++;
+		if(cbuffer->read_pos >= 2*MAXBUF)
+			cbuffer->read_pos = 0;
+		
+		cbuffer->empty_len++;
+		printf("empty_len2:%d\n",cbuffer->empty_len);
+		return 1;
 	}
 	
-	cbuflen=2*MAXBUF-cbuffer->empty_len;//the effective character on the circular buffer
-	command_len=cbuffer->buf[cbuffer->read_pos+2];//the length of this command
-	if(command_len > cbuflen){
+	if(command_len > cbuflen) {
 		printf("uncomplete command remains on the circular buffer\n");
 		return -1;
+    }
+    else {
+		read_pos_backup = cbuffer->read_pos + 1;				//备份当前读指针+1；
+		if(read_pos_backup >= 2*MAXBUF)
+			read_pos_backup = 0;
+		
+		for(i=0;i<command_len;i++){				//copy the command;
+			buffer[i] = cbuffer->buf[cbuffer->read_pos];
+	printf("%3x",buffer[i]);
+			
+			cbuffer->read_pos++;
+			if(cbuffer->read_pos >= 2*MAXBUF)
+				cbuffer->read_pos = 0;
+		}
+	printf("\n");
+		
+		if(checksum_check(buffer, command_len) == 0) {			//校验和正确
+			cbuffer->empty_len += command_len;
+			printf("empty_len3:%d\n",cbuffer->empty_len);
+			return command_len;
+		}
+		else {													//校验和错误，恢复读指针；
+			cbuffer->read_pos = read_pos_backup;
+	printf("read_pos(checksum_check fail):%d\n",cbuffer->read_pos);
+	printf("CHECKSUM ERROR!\n");
+			cbuffer->empty_len++;
+			printf("empty_len4:%d\n",cbuffer->empty_len);
+			return 1;
+		}
 	}
-	
-	for(i=0;i<command_len;i++){
-		buffer[i]=cbuffer->buf[cbuffer->read_pos];
-		cbuffer->read_pos++;
-		if(cbuffer->read_pos>=2*MAXBUF)
-			cbuffer->read_pos=0;
-	}
-	cbuffer->empty_len+=command_len;
-	return command_len;
 }
 
 
-
-					
-					
+int checksum_check(char command[], int n)
+{
+	char checksum = 0x00;
+	int i;
+	char m;
+	if(n >= 5){		//命令最小长度为5;  （起始字 命令字 长度 数据 校验和）
+		m = command[2];     //命令长度;
+		for( i=0;i<m-1;i++ )
+			checksum += command[i];
+		if( checksum == command[m-1] )
+			return 0;
+		else {
+			return -1;
+		}
+	}
+	else
+		return -1;
+}
