@@ -23,6 +23,9 @@
 #include <fcntl.h>
 #include <signal.h>
 
+#define UDP_TEST_PORT       9800
+#define UDP_SERVER_IP       "127.0.0.1"
+
 #define MIN_COMMAND_LEN 5
 #define MAX_COMMAND_LEN 10
 #define BUFFER_SIZE 3072 //message mode
@@ -40,8 +43,11 @@ char atcommand_to_server[MAXBUF];
 int atcommand_to_server_allmessage = 0;
 char atcommand_to_servermesg[BUFFER_SIZE];
 
-#include <fcntl.h>  
-#include <malloc.h>
+int g_gst_sockfd;
+struct sockaddr_in g_gst_server_addr;
+
+#include<fcntl.h>  //add the gpio,1026
+#include<malloc.h>
 #define DATA_LEN 2
 #define GPIO_NUM_LEN 4
 #define file_len 126
@@ -83,6 +89,9 @@ int process_command(char buffer[],int sockfd);
 int get_emptylen(struct circular_buffer* cubuffer);
 int writecommand(char buffer[],struct circular_buffer *cbuffer,int len);
 int getcommand(char buffer[],struct circular_buffer *cbuffer,int len);
+int gst_start_stream(int fd);
+int gst_stop_stream(int fd);
+
 
 int main(int argc,char *argv[])  
 {
@@ -99,19 +108,21 @@ int main(int argc,char *argv[])
 	int state;
 	int state_logging_c,state_processing_c,state_processing_fail,  state_connect_fail=0;
 	char buffer[MAXBUF] = {0};
-	char heartbeat[] = {0xF2,0x07,0x05,0x01,0xFF};//heartbeat 
+	char heartbeat[] = {0xF2,0x07,0x05,0x01,0xFF};
 	char reset[] = {0xF2,0x13,0x05,0x01,0x0B};//reset that  logging
 	char change[] = {0xF2,0x13,0x05,0xF1,0xFB};//change the state status
 
 	fd_set rfds;
 	struct timeval tv;
 	int retval, maxfd = -1;
+	
  
 	if(argc != 3) {  
 		printf("Usage: fileclient <address> <port>/n");
 		return 0;  
 	}
-
+  
+  
 	sockfd = 0;
 	state = START;
 	cbuffer.read_pos=0;
@@ -121,7 +132,22 @@ int main(int argc,char *argv[])
   	atcommand_process(); //send the message to 10010
 
  	watchdog = 0;//crate the watchdog thread
-  	watchdog_process();  //we process the watchdog
+  watchdog_process();  //we process the watchdog
+ 
+  g_gst_sockfd=socket(AF_INET,SOCK_DGRAM,0); 
+
+  bzero(&g_gst_server_addr,sizeof(g_gst_server_addr));
+
+  g_gst_server_addr.sin_family = AF_INET;
+
+  g_gst_server_addr.sin_port = htons(UDP_TEST_PORT);
+
+  g_gst_server_addr.sin_addr.s_addr = inet_addr(UDP_SERVER_IP);
+
+//  g_gst_server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+//  g_gst_server_addr.sin_port = htons(9800);
+//  g_gst_sockfd=socket(AF_INET,SOCK_DGRAM,0);
+printf("$$$$$g_gst_sockfd is %d\n",g_gst_sockfd);
         
 	while(1)
 	{
@@ -164,33 +190,29 @@ int main(int argc,char *argv[])
 			if(ret < 0)//failure
 				{
 					if(state_logging_c > 10)
-					{
 						state = START;
-						break;
-					}
 					else
-					{
 						state = LOGGING;
-						break;
-					}
+					break;
 				}
-			printf("LOGIN SUCESS!\n");	
-				if(restart_flag == 0)
-				{
-					printf("the network is wrong,reset\n");
-					send(sockfd,reset,5/*strlen(reset)*/,0);
-				}
-				else
-				{
-					printf("change the state logging\n");
-					send(sockfd,change,5/*strlen(change)*/,0);
-				}
+			printf("LOGIN SUCESS!\n");
+			if(restart_flag == 0)
+			{
+				printf("the network is wrong,reset\n");
+				send(sockfd,reset,5/*strlen(reset)*/,0);
+			}
+			else
+			{
+				printf("change the state logging\n");
+				send(sockfd,change,5/*strlen(change)*/,0);
+			}	
 			state_connect_fail=0;
 
 			state = PROCESSING;	
 			state_processing_c = 0;
       		state_processing_fail = 0;
 
+      		keepflag = 0;
       		restart_flag = 0;
 			break;
 	
@@ -253,20 +275,20 @@ int main(int argc,char *argv[])
 				}
 				else
 				{
-					sleep(3);
+									sleep(3);
             			state_processing_fail++;
             			if(state_processing_fail > 10) 
             			{
 							if(stop_stream_flag != 0)
-							{			
-								system(" /home/media/work/stop_stream.sh ");
+							{					
+								stop_stream();
 							}
             				state=START;
             				printf("we switch to START state because we cannot receive message from server\n");
             				restart_flag = 1;
             				break;
             			}
-						printf("Failed to receive the message! \n");
+							printf("Failed to receive the message! \n");
 				}
 			}
 		    
@@ -274,21 +296,23 @@ int main(int argc,char *argv[])
 			break;
 	
 		case HEARTBEAT:
-			signal(SIGPIPE, SIG_IGN);//ignore the signal of the SIGPIPE
+			signal(SIGPIPE, SIG_IGN);
 			
-			if(atcommand_to_server_pending==1)
+			if(atcommand_to_server_pending == 1)
 			{
-				send(sockfd,atcommand_to_server,strlen(atcommand_to_server),0);//take the same effect as a heartbeat
+				len=send(sockfd,atcommand_to_server,strlen(atcommand_to_server),0);//take the same effect as a heartbeat
 				atcommand_to_server_pending=0;
 				send(sockfd, heartbeat, strlen(heartbeat), 0);
 			}
+
 			else if(atcommand_to_server_allmessage == 1)
 			{
 				send(sockfd,atcommand_to_servermesg,strlen(atcommand_to_servermesg),0);
 				atcommand_to_server_allmessage=0;
 				send(sockfd,heartbeat,strlen(heartbeat),0);
 			}
-			else /*if(atcommand_to_server_pending == 0 || atcommand_to_server_allmessage == 0)*/
+
+			else
 			{
 				len = send(sockfd, heartbeat, strlen(heartbeat), 0);
 				if (len <= 0)
@@ -302,12 +326,15 @@ int main(int argc,char *argv[])
 					printf("keepflag = %d\n",keepflag);
 					printf("heartbeat send!\n");
 					keepflag += 1;
-					if(keepflag > 10)
+					if(keepflag > 20)
 					{
 						state = START;
-						printf("we switch to START state because we sent 10 times heartbeat that but the server not sent us\n");
-						keepflag = 0;
-						restart_flag = 1;
+					    if(keepflag >50)
+					    {
+                        	watchdog = 1;
+                        }    	
+                        printf("we switch to START state because we sent 10 times heartbeat that but the server not sent us\n");
+                        restart_flag = 1;
 						break;
 					}
 				}
@@ -335,7 +362,7 @@ int start_stream(int fd)
 		int err;
 		err = pthread_create(&tid,NULL,operation,(void *)fd);//at 10.12
     if(err != 0)
-       printf("error creat");	
+       printf("pthread creat error");	
 }
 
 void * operation(void * arg)
@@ -343,38 +370,30 @@ void * operation(void * arg)
 	int sockfd = (int)arg; //at 10.12
 	char command[] = {0xF2,0x08,0x05,0xF1,0xF0};//faild
 	char command1[] = {0xF2,0x08,0x05,0x01,0x00};//success
+	char gst_start_command[]={114,0x0a,0x0d};//114:'r', stands for "run"
 	stop_stream_flag = 1; //when we start the stream .we turn the flag to 1
-	int status;
-	int val; //used by mutex
-printf("*****************sockfd:%d\n",sockfd);
-	system(" /etc/init.d/rsyslog stop ");
-	status = system(" /home/media/work/start_stream.sh & ");
-	printf("status:%d\n",status);
-	if(status == -1){
-		send(sockfd,command,sizeof(command),0);
-		printf("system error:%s\n",strerror(errno));
-	}
-	else{
+	int status,ret;
+	int val;
 		
-		send(sockfd,command1,5,0);
-		startstreamgpio();
-		printf("run command successful\n");
+		printf("*****************sockfd:%d\n",sockfd);
+		system(" /etc/init.d/rsyslog stop ");
 	
-		sleep(300);//if the stream isn't stop in 1800'
-		if(stop_stream_flag != 0)
+		ret=sendto(g_gst_sockfd,gst_start_command,3,0,(struct sockaddr*)&g_gst_server_addr,sizeof(struct sockaddr_in));
+printf("$$$$$g_gst_sockfd is %d,ret is %d\n",g_gst_sockfd,ret);
+		if(ret>=0)
 		{
-			stop_stream(sockfd);
-			printf("ok ok ok ok ok !!!!\n");
+			printf("start the stream successful\n");
+			send(sockfd,command1,5,0);
+			startstreamgpio();
 		}
 		else
 		{
-			printf("the stream is stop!\n");
+			printf("start the stream faild\n");
+			send(sockfd,command,5,0);
 		}
+		
 		pthread_exit((void *)1);
-	}
-//pthread_mutex_unlock(&mutex);//unlock the mutex
 }
-
 
 //停止推视频流
 int stop_stream(int fd)
@@ -382,19 +401,22 @@ int stop_stream(int fd)
 	int sockfd = fd;
 	char command[] = {0xF2,0x09,0x05,0xF1,0xF1};//faild
 	char command1[] = {0xF2,0x09,0x05,0x01,0x01};//success
+	char gst_stop_command[]={115,0x0a,0x0d};//115:'s', stands for "stopping"
 	int err;
-	err = system(" /home/media/work/stop_stream.sh ");
-	if((err == -1))
+	int ret;
+
+	ret=sendto(g_gst_sockfd,gst_stop_command,3,0,(struct sockaddr*)&g_gst_server_addr,sizeof(g_gst_server_addr));
+	if(ret>=0)
 	{
-		send(sockfd,command,sizeof(command),0);
-		printf("system stop stream error\n");
+		printf("stop the stream successful\n");
+		stop_stream_flag = 0; //at 1106,when we stop the stream , we make the flag to 0
+		send(sockfd,command1,5/*sizeof(command1)*/,0);
+		stopstreamgpio();
 	}
 	else
 	{
-		printf("RUN the stop stream successful!\n");
-		stop_stream_flag = 0; //at 1106,when we stop the stream , we make the flag to 0
-		send(sockfd,command1,sizeof(command1),0);
-		stopstreamgpio();
+		printf("stop the stream is faild\n");
+		send(sockfd,command,5,0);
 	}
 	return 0;
 }
@@ -902,7 +924,7 @@ printf("\n");
 						keepalive();//just print a message
 					}
 					else if (buffer[1] == 0x08){
-						if(stop_stream_flag == 0)
+						if(stop_stream_flag == 0)//have stopped
 						{
 							start_stream(sockfd);
 						}
@@ -968,7 +990,7 @@ void * send_gsm(void * arg)
         char buffer4[20] = {'C','X','L','L','\r',0x1A,'\r'};//send the message that check the stream
         char buffer5[20] = {'A','T','+','C','M','G','L','=','"','A','L','L','"','\r'}; //read the whole message
         char buffer6[20] = {'A','T','+','C','M','G','D','=','1',',','4','\r'}; //delete all the message
-		char buffer7[20] = {'A','T','E','0','\r'};
+	char buffer7[20] = {'A','T','E','0','\r'};
 		int checktotal = 0; //the num is that we check the mode is empty's times
 		portfd = 0;
 		stat = OPEN;
@@ -1319,8 +1341,8 @@ void *watchdog_function(void *arg);
 watchdog_process(void)
 {
 	  	pthread_t tid3;
-        int err;
-        err = pthread_create(&tid3,NULL,watchdog_function,(void*)NULL);//at 11.16
+        	int err;
+        	err = pthread_create(&tid3,NULL,watchdog_function,(void*)NULL);//at 11.16
 		if(err != 0)
 			printf("error creat"); 
 }
@@ -1342,18 +1364,18 @@ void *watchdog_function(void *arg)
      			if(watchdog == 0)
      			{
    					watchdoggpio();						
-    				}//if(watchdog == 0)
-    				else
-    				{
-    					stat = SENDGPIO;
-    					break;
-    				}
-    				stat = CIRCLE;
-    				break ;
-    			case SENDGPIO:
-    				sleep(20); //we couldn't send the signal to the gpio,then the watchadog is resert
-    				stat = CIRCLE;
+    			}//if(watchdog == 0)
+    			else
+    			{
+    				stat = SENDGPIO;
     				break;
+    			}
+    			stat = CIRCLE;
+    			break ;
+    		case SENDGPIO:
+    			sleep(20); //we couldn't send the signal to the gpio,then the watchadog is resert
+    			stat = CIRCLE;
+    			break;
      	}//switch(stat)
      }//while(1)
 }//watchdog_function()
