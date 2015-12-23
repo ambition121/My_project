@@ -35,6 +35,9 @@ int stop_stream_flag = 0;//if the stream is stop we make the flag to 0,,,at 1106
 int watchdog = 0;//we use this global variable to make the watchdog function
 int restart_flag = 0;//we use this flag,that we know the result we logging the server
 
+char g_user[16] = {"board1"};
+char g_passwd[16] = {"1"};
+
 /*we send the flow to the server*/
 int atcommand_to_server_pending = 0;
 char atcommand_to_server[MAXBUF];
@@ -46,8 +49,6 @@ char atcommand_to_servermesg[BUFFER_SIZE];
 int return_flag = 0; //when we receive the return command ,we turn this falg to 1 12-18
 char return_command[MIN_COMMAND_LEN]; //when we receive the return command that from the server.at 12-18
 
-int g_gst_sockfd;
-struct sockaddr_in g_gst_server_addr;
 
 #include<fcntl.h>  //add the gpio,1026
 #include<malloc.h>
@@ -55,6 +56,11 @@ struct sockaddr_in g_gst_server_addr;
 #define GPIO_NUM_LEN 4
 #define file_len 126
 #define GPIO_CLASS_NAME "/sys/class/gpio/export" //1026
+
+int g_gst_sockfd;
+struct sockaddr_in g_gst_server_addr;
+int  g_pipefd[2];
+
 /*this is use to add the gpio*/
     char  bu[DATA_LEN];
     int fd_class,fd_direction,fd_value,fd_num;
@@ -72,9 +78,6 @@ struct sockaddr_in g_gst_server_addr;
 
     char *gpio_name3 = "128";//we use this gpio to the watchdog
     char *gpio_name4 = "129"; //open the watchdog 
-
-char g_user[16] = {"board1"};
-char g_passwd[16] = {"1"};
 
 enum{
 	START=0,
@@ -117,18 +120,45 @@ int main(int argc,char *argv[])
 	char heartbeat[] = {0xF2,0x07,0x05,0x01,0xFF};
 	char reset[] = {0xF2,0x13,0x05,0x01,0x0B};//reset that  logging
 	char change[] = {0xF2,0x13,0x05,0xF1,0xFB};//change the state status
-
+	pid_t pid_gst;
+  
 	fd_set rfds;
 	struct timeval tv;
 	int retval, maxfd = -1;
 	
  
-	if(argc != 3) {  
+	if(argc != 3) 
+	{  
 		printf("Usage: fileclient <address> <port>/n");
 		return 0;  
 	}
   
-  
+  	if(pipe(g_pipefd) < 0) //create the pipe
+  	{
+  		printf("create pipe error\n");
+  		return 0;
+  	}
+
+  	if((pid_gst=fork())<0)
+  	{
+  		printf("fork error\n");
+  	}
+  	else if(pid_gst == 0) // is child;
+  	{
+  		close(g_pipefd[1]);//close the child's write end
+  		if(g_pipefd[0] != STDIN_FILENO)
+  		{
+  			if(dup2(g_pipefd[0],STDIN_FILENO) != STDIN_FILENO) //copy the stdin to the child's read 
+  			{
+  				printf("dup2 error to stdin\n");
+  			}
+  			close(g_pipefd[0]);//this time the new g_pipefd[0] is stdin,we close the old g_pipefd[0]	
+  		}
+  		execl("/home/media/work/videopush.out","videopush.out",g_user,(char*)0);//videopush.out will modify the udp port according to the username.
+  	}
+  //parent
+  	close(g_pipefd[0]);//close the parents' read end
+
 	sockfd = 0;
 	state = START;
 	cbuffer.read_pos=0;
@@ -137,9 +167,9 @@ int main(int argc,char *argv[])
 	
   	atcommand_process(); //send the message to 10010
 
- 	watchdog = 0;//crate the watchdog thread
-  watchdog_process();  //we process the watchdog
- 
+  	watchdog = 0;//crate the watchdog thread
+  	watchdog_process();  //we process the watchdog
+#if 0
   g_gst_sockfd=socket(AF_INET,SOCK_DGRAM,0); 
 
   bzero(&g_gst_server_addr,sizeof(g_gst_server_addr));
@@ -149,11 +179,10 @@ int main(int argc,char *argv[])
   g_gst_server_addr.sin_port = htons(UDP_TEST_PORT);
 
   g_gst_server_addr.sin_addr.s_addr = inet_addr(UDP_SERVER_IP);
-
-//  g_gst_server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-//  g_gst_server_addr.sin_port = htons(9800);
-//  g_gst_sockfd=socket(AF_INET,SOCK_DGRAM,0);
-printf("$$$$$g_gst_sockfd is %d\n",g_gst_sockfd);
+#else//we use the pipe to communicate with gst-start-stream
+	
+	
+#endif
         
 	while(1)
 	{
@@ -218,7 +247,6 @@ printf("$$$$$g_gst_sockfd is %d\n",g_gst_sockfd);
 			state_processing_c = 0;
       		state_processing_fail = 0;
 
-      		keepflag = 0;
       		restart_flag = 0;
 			break;
 	
@@ -263,12 +291,10 @@ printf("$$$$$g_gst_sockfd is %d\n",g_gst_sockfd);
         printf("len = %d\n",len);
 
 
-				if(len > 0)
-				{
+				if(len > 0){
 					keepflag = 0;
 					int len_command;
-					if(len<=get_emptylen(&cbuffer))
-					{
+					if(len<=get_emptylen(&cbuffer)){
 						//the the empty len is enough,so write the buffer to the circular buffer
 						writecommand(buffer,&cbuffer,len);
 					}
@@ -283,20 +309,20 @@ printf("$$$$$g_gst_sockfd is %d\n",g_gst_sockfd);
 				}
 				else
 				{
-					sleep(3);
-            		state_processing_fail++;
-            		if(state_processing_fail > 10) 
-            		{
-						if(stop_stream_flag != 0)
-						{					
-							stop_stream(sockfd);
-						}
-            			state=START;
-            			printf("we switch to START state because we cannot receive message from server!!\n");
-            			restart_flag = 1;
-            			break;
-            		}
-					printf("Failed to receive the message! \n");
+						sleep(3);
+            			state_processing_fail++;
+            			if(state_processing_fail > 10) 
+            			{
+							if(stop_stream_flag != 0)
+							{					
+								stop_stream(sockfd);
+							}
+            				state=START;
+            				printf("we switch to START state because we cannot receive message from server\n");
+            				restart_flag = 1;
+            				break;
+            			}
+							printf("Failed to receive the message! \n");
 				}
 			}
 		    
@@ -322,7 +348,7 @@ printf("$$$$$g_gst_sockfd is %d\n",g_gst_sockfd);
 
 			else
 			{
-				len = send(sockfd, heartbeat, strlen(heartbeat), 0);
+				len = send(sockfd, heartbeat, 5/*strlen(heartbeat)*/, 0);
 				if (len <= 0)
 				{
 					printf("failed to send heartbeat !\n");//in this case, we also add keepflag by 1,to switch the state to START
@@ -337,7 +363,7 @@ printf("$$$$$g_gst_sockfd is %d\n",g_gst_sockfd);
 					if(keepflag > 20)
 					{
 						state = START;
-					    if(keepflag >50)
+					    if(keepflag >60)
 					    {
                         	watchdog = 1;
                         }    	
@@ -379,24 +405,19 @@ void * operation(void * arg)
 	char command[] = {0xF2,0x08,0x05,0xF1,0xF0};//faild
 	char command1[] = {0xF2,0x08,0x05,0x01,0x00};//success
 	char gst_start_command[]={114,0x0a,0x0d};//114:'r', stands for "run"
-	char gst_start_command0[30];
 	stop_stream_flag = 1; //when we start the stream .we turn the flag to 1
 	int status,ret;
-	static int push_times=0;
 	int val;
 		
 		printf("*****************sockfd:%d\n",sockfd);
 		system(" /etc/init.d/rsyslog stop ");
-	  if(push_times==0){
-	  	strcpy(gst_start_command0,g_user);	
-	  	ret = sendto(g_gst_sockfd,gst_start_command0,strlen(gst_start_command0)+1,0,	(struct sockaddr*)&g_gst_server_addr,sizeof(struct sockaddr_in));
-	  }
-	  else{	  	
+
+#if 0	
 		ret=sendto(g_gst_sockfd,gst_start_command,3,0,(struct sockaddr*)&g_gst_server_addr,sizeof(struct sockaddr_in));
-		}
-		push_times++; 
-		
-printf("$$$$$g_gst_sockfd is %d,ret is %d\n",g_gst_sockfd,ret);
+    printf("$$$$$g_gst_sockfd is %d,ret is %d\n",g_gst_sockfd,ret);
+#else
+		ret = write(g_pipefd[1],gst_start_command,3); //the parents' process through the g_pipifd[1] to write the command to the chiald's process
+#endif
 		if(ret>=0)
 		{
 			printf("start the stream successful\n");
@@ -407,17 +428,16 @@ printf("$$$$$g_gst_sockfd is %d,ret is %d\n",g_gst_sockfd,ret);
 		{
 			printf("start the stream faild\n");
 			send(sockfd,command,5,0);
-		}
-		
-		sleep(60);
+		}	
+		sleep(60); //when the stream is pulling 60',we stop the stream 
 		if(stop_stream_flag != 0)
 		{
-		    printf("the stream is pushing!!\n");
-		    stop_stream(sockfd);
-		}
+			printf("the stream is pushing!\n");
+			stop_stream(sockfd);
+		}	
 		else
 		{
-		    printf("the stream is stopped!!!\n");
+			printf("the stream is stopped!!\n");
 		}
 		pthread_exit((void *)1);
 }
@@ -432,7 +452,11 @@ int stop_stream(int fd)
 	int err;
 	int ret;
 
+#if 0
 	ret=sendto(g_gst_sockfd,gst_stop_command,3,0,(struct sockaddr*)&g_gst_server_addr,sizeof(g_gst_server_addr));
+#else
+	ret = write(g_pipefd[1],gst_stop_command,3);
+#endif
 	if(ret>=0)
 	{
 		printf("stop the stream successful\n");
@@ -639,7 +663,7 @@ int remote(int fd)
         char command[] = {0xF2,0x11,0x05,0xF1,0xF9};//faild
         char command1[] = {0xF2,0x11,0x05,0x01,0x09};//success
         int err;
-        err = system(" /home/media/work/remote.sh ");
+        err = system("./remote.sh ");
         if((err == -1)){
             send(sockfd,command,sizeof(command),0);
             printf("system remote error\n");
@@ -846,6 +870,8 @@ int login_c(int fd)
 {
 	int sockfd = fd;
 	char command[40];
+//	char user[16] = {0};
+//	char passwd[16] = {0};
 
 	char checksum = 0x00;
 	int i; 
@@ -967,7 +993,7 @@ printf("\n");
                     }
 					else if(buffer[1] == 0x12){
 						closeremote(sockfd);
-					}
+					}	
 
 					else if(buffer[1] == 0x13){ //this command is return the command 12-18
 						return_command[0] = buffer[3];  //if the return is not only,you can add in this
@@ -1019,7 +1045,7 @@ void * send_gsm(void * arg)
         char buffer4[20] = {'C','X','L','L','\r',0x1A,'\r'};//send the message that check the stream
         char buffer5[20] = {'A','T','+','C','M','G','L','=','"','A','L','L','"','\r'}; //read the whole message
         char buffer6[20] = {'A','T','+','C','M','G','D','=','1',',','4','\r'}; //delete all the message
-		char buffer7[20] = {'A','T','E','0','\r'};
+	char buffer7[20] = {'A','T','E','0','\r'};
 		int checktotal = 0; //the num is that we check the mode is empty's times
 		portfd = 0;
 		stat = OPEN;
@@ -1101,11 +1127,11 @@ void * send_gsm(void * arg)
 				nwrite = write(portfd,buffer3,strlen(buffer3)); //send the number                                                                                                                       
 					printf("write the number len is:%d\n",nwrite);
 					printf("buffer3 is:%s\n",buffer3);
-					sleep(2);
+				sleep(2);
 					stat = DETAIL;
 					break;
 
-			case DETAIL: //CXLL 0x1A we can check the stream 12-18
+			case DETAIL: //CXLL 0x1A we can check the stream
 				if(check_flow == 1)
 				{
 					check_flow = 0;
@@ -1113,6 +1139,7 @@ void * send_gsm(void * arg)
 					printf("write the command len is:%d\n",nwrite);
 					printf("buffer4 is:%s\n",buffer4);
 				}
+
 				else if (return_flag == 1) //12-18
 				{
 					char buffer8[10] = {return_command[0],0x1A,'\r'};
@@ -1121,7 +1148,7 @@ void * send_gsm(void * arg)
 					printf("write the comand len is :%d\n",nwrite);
 					printf("buffer8 is :%s\n",buffer8);
 				}
-					sleep(40);
+				sleep(40);
 					stat = CHECK;
 					break;
 			
@@ -1231,15 +1258,15 @@ void * send_gsm(void * arg)
                 }
                 else
                 {
-                 	sleep(30);
-                	printf("##################checktotal=%d\n",checktotal);
+                    sleep(30);
+                printf("##################checktotal=%d\n",checktotal);
                     if(checktotal > 2880){ //when we check the mode 1440 times(every time is 60',total is a day) is empty we sent the message to 10010
-                        stat = SENDNUM;
-                        break;
-                   }
-                  	stat = CHECK;
+                    stat = SENDNUM;
+                    break;
+                }
+                  stat = CHECK;
 		    		sleep(2);
-                  	break;
+                  break;
                 }
 
 		default:
@@ -1283,13 +1310,12 @@ int getcommand( char buffer[], struct circular_buffer *cbuffer, int len)
 	char ch;
 	int cbuflen = 2*MAXBUF - cbuffer->empty_len;//the effective character on the circular buffer
 	if(cbuflen <= 0)				//没有有效数据；
-		return -1;
+	return -1;
 //printf("\nread_pos:%d\n",cbuffer->read_pos); 
 //printf("empty_len:%d\n",cbuffer->empty_len);
 
 	//searching the sync word
-	for(i=0;i<cbuflen;i++) 
-	{
+	for(i=0;i<cbuflen;i++) {
 		ch = cbuffer->buf[cbuffer->read_pos];
 		if(ch == 0xF1)	
 			break;
@@ -1298,7 +1324,8 @@ int getcommand( char buffer[], struct circular_buffer *cbuffer, int len)
 			cbuffer->read_pos++;
 			if(cbuffer->read_pos >= 2*MAXBUF)
 				cbuffer->read_pos = 0;
-			cbuffer->empty_len++;   
+			cbuffer->empty_len++;  
+	//		printf("empty_len1:%d\n",cbuffer->empty_len); 
 			if(cbuffer->empty_len == 2*MAXBUF)
 				return -1;
         	}
@@ -1306,6 +1333,7 @@ int getcommand( char buffer[], struct circular_buffer *cbuffer, int len)
     
 	cbuflen = 2*MAXBUF - cbuffer->empty_len;//the effective character on the circular buffer
 	command_len = cbuffer->buf[(cbuffer->read_pos+2)%(MAXBUF*2)];//the length of this command
+//	printf("command_len:%3d  cbuflen:%3d\n", command_len, cbuflen);
 	if(cbuflen < MIN_COMMAND_LEN)				//uncomplete command remains on the circular buffer
 		return -1;
 
@@ -1317,6 +1345,7 @@ int getcommand( char buffer[], struct circular_buffer *cbuffer, int len)
 			cbuffer->read_pos = 0;
 		
 		cbuffer->empty_len++;
+//		printf("empty_len2:%d\n",cbuffer->empty_len);
 		return 1;
 	}
 	
@@ -1331,6 +1360,7 @@ int getcommand( char buffer[], struct circular_buffer *cbuffer, int len)
 		
 		for(i=0;i<command_len;i++){				//copy the command;
 			buffer[i] = cbuffer->buf[cbuffer->read_pos];
+//	printf("%3x",buffer[i]);
 			
 			cbuffer->read_pos++;
 			if(cbuffer->read_pos >= 2*MAXBUF)
@@ -1340,11 +1370,15 @@ int getcommand( char buffer[], struct circular_buffer *cbuffer, int len)
 		
 		if(checksum_check(buffer, command_len) == 0) {			//校验和正确
 			cbuffer->empty_len += command_len;
+//			printf("empty_len3:%d\n",cbuffer->empty_len);
 			return command_len;
 		}
 		else {													//校验和错误，恢复读指针；
 			cbuffer->read_pos = read_pos_backup;
+//	printf("read_pos(checksum_check fail):%d\n",cbuffer->read_pos);
+//	printf("CHECKSUM ERROR!\n");
 			cbuffer->empty_len++;
+//			printf("empty_len4:%d\n",cbuffer->empty_len);
 			return 1;
 		}
 	}
