@@ -1,4 +1,4 @@
-/* GStreamer use the socket to commit
+/* GStreamer
  * Copyright (C) 2009 Wim Taymans <wim.taymans@gmail.com>
  *
  * This library is free software; you can redistribute it and/or
@@ -25,8 +25,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <sys/time.h>
-#include <sys/types.h>          /* See NOTES */
-#include <sys/socket.h>
+#include <unistd.h>
 
 #define UDP_TEST_PORT   9800 //port is 9800
 /*
@@ -54,7 +53,6 @@
 //extern FILE* stream_record_fd;
 static GstElement *g_pipeline;
 
-//static int push_timing=0;
 /* print the stats of a source */
 static void
 print_source_stats (GObject * source)
@@ -83,13 +81,6 @@ print_stats (GstElement * rtpbin)
   guint i;
 
   g_print ("***********************************\n");
- 
-/* 
-  printf("push_timeing is:%d\n",push_timing++);
-  push_timing++;
-  if(push_timing>60)
-  	gst_element_set_state(g_pipeline,GST_STATE_NULL);//we force it to stop when the timing of videopushing is larger than 600 seconds
-*/
 
   /* get session 0 */
   g_signal_emit_by_name (rtpbin, "get-internal-session", 0, &session);
@@ -124,13 +115,11 @@ gboolean file_watch_fun(GIOChannel *source, GIOCondition condition, void *data)
 			printf("set the gst state to NULL to stop the stream\n");
 		}
     if(str[0]=='r'){
- //   	push_timing=0;
       gst_element_set_state(g_pipeline,GST_STATE_PLAYING);
       printf("set the gst state to playing \n");
     }
     else
       printf("other characters,ingonring\n");
-		
 		return TRUE;
 	}
 }
@@ -171,8 +160,8 @@ main (int argc,char* argv[])
   int sock;
   char buffer[10];
   int len;
-  int index;
-  int udpport;
+
+#if 0
   struct sockaddr_in servaddr; 
   int addr_len=sizeof(struct sockaddr_in);
  
@@ -180,8 +169,9 @@ main (int argc,char* argv[])
   sock = socket(AF_INET,SOCK_DGRAM,0);
   g_assert(sock>0);
 
-  int SO_REUSEADDR_on = 1;  //process the TIME_WAIT
-  setsockopt( sock, SOL_SOCKET, SO_REUSEADDR, &SO_REUSEADDR_on, sizeof(SO_REUSEADDR_on));
+  int SO_REUSEADDR_on = 1;
+  setsockopt( sock, SOL_SOCKET, SO_REUSEADDR, &SO_REUSEADDR_on, sizeof(SO_REUSEA
+DDR_on));
 
   bzero(&servaddr,sizeof(servaddr));
   servaddr.sin_family = AF_INET;
@@ -196,11 +186,10 @@ main (int argc,char* argv[])
   bzero(buffer,sizeof(buffer));
   len = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr *)&servaddr ,&addr_len);
   
-  printf("$$$-receive the lentgth is %d, boardname is:%s\n",len,buffer);
-  //now to calculate the udp port to which the video data is sent to
-  index=atoi(&buffer[5]);//buffer:board1,or board2,or board3, or board4
-  udpport=index*2+8552;//8554,or 8556, or 8558, or 8560
-  
+  printf("$$$-receive the lentgth is %d, string is:%s\n",len,buffer);
+#endif
+	
+	printf("gst board name is %s\n",argv[1]);
   gst_init (&argc, &argv);
 
   /* the pipeline to hold everything */
@@ -208,25 +197,21 @@ main (int argc,char* argv[])
   g_assert (g_pipeline);
   
   //set the iochannel
-  input=g_io_channel_unix_new(sock);//create the iochannel
-	g_io_channel_set_encoding(input,NULL,NULL); //setting data encoding
-	g_io_add_watch(input,G_IO_IN | G_IO_PRI,(GIOFunc)file_watch_fun,NULL); //the specified event add to the event loop
-  //There is data to read. There is urgent data to read. (file_watch_fun is callback function)
-
-  /** the audio capture and format conversion 
-  gst_element_factory_make == gst_element_factory_find and gst_element_factory_create
-  create the factory object
-  */
+#if 0
+  input=g_io_channel_unix_new(sock);
+#else
+	input=g_io_channel_unix_new(STDIN_FILENO);
+#endif
+	g_io_channel_set_encoding(input,NULL,NULL);
+	g_io_add_watch(input,G_IO_IN | G_IO_PRI,(GIOFunc)file_watch_fun,NULL); 
+  
+  /* the audio capture and format conversion */
   videosrc = gst_element_factory_make ("v4l2src", "videosrc");
   g_assert (videosrc);
   
   g_object_set(G_OBJECT(videosrc),"device","/dev/video3",NULL);
 	g_object_set(G_OBJECT(videosrc),"inputnum",1,NULL);
-  g_object_set(G_OBJECT(videosrc),"sensor_name","adv7280m_a 3-0020",NULL);
-
-
-
-
+        g_object_set(G_OBJECT(videosrc),"sensor_name","adv7280m_a 3-0020",NULL);	
 	filter=gst_element_factory_make("capsfilter","filter");
 	g_assert(filter);
 	/*new caps */
@@ -236,24 +221,17 @@ main (int argc,char* argv[])
 	
 	/*set filter caps*/
 	g_object_set(G_OBJECT(filter),"caps",caps,NULL);
-
-
-
 	
-  videoenc = gst_element_factory_make ("ducatih264enc", "the ti encoder");//create the element of video compression
+  videoenc = gst_element_factory_make ("ducatih264enc", "the ti encoder");
   g_assert (videoenc);
   g_object_set(G_OBJECT(videoenc),"bitrate",1024,NULL);
  
   
-
   videopay = gst_element_factory_make ("rtph264pay", "videopay");
   g_assert (videopay);
    g_object_set(G_OBJECT(videopay),"pt",96,NULL);
 
-  /** add capture and payloading to the pipeline and link 
-    gst_bin_add_many--add the elements to the g_pipeling
-    gst_element_link_many--link all the elements
-  */
+  /* add capture and payloading to the pipeline and link */
   gst_bin_add_many (GST_BIN (g_pipeline), videosrc, filter, videoenc,
       videopay, NULL);
 
@@ -262,26 +240,20 @@ main (int argc,char* argv[])
     g_error ("Failed to link videosrc, video encoder and video payloader");
   }
 
-
-
-
   /* the rtpbin element */
   rtpbin = gst_element_factory_make ("gstrtpbin", "rtpbin");
   g_assert (rtpbin);
 
   gst_bin_add (GST_BIN (g_pipeline), rtpbin);
 
-
-
-
   /* the udp sinks and source we will use for RTP and RTCP */
   rtpsink = gst_element_factory_make ("udpsink", "rtpsink");
   g_assert (rtpsink);
-  g_object_set (rtpsink, "port", udpport, "host", DEST_HOST, NULL);
+  g_object_set (rtpsink, "port", 8554, "host", DEST_HOST, NULL);
 
   rtcpsink = gst_element_factory_make ("udpsink", "rtcpsink");
   g_assert (rtcpsink);
-  g_object_set (rtcpsink, "port", udpport+1, "host", DEST_HOST, NULL);
+  g_object_set (rtcpsink, "port", 8555, "host", DEST_HOST, NULL);
   /* no need for synchronisation or preroll on the RTCP sink */
   g_object_set (rtcpsink, "async", FALSE, "sync", FALSE, NULL);
 
@@ -290,9 +262,6 @@ main (int argc,char* argv[])
   g_object_set (rtcpsrc, "port", 5005, NULL);
 
   gst_bin_add_many (GST_BIN (g_pipeline), rtpsink, rtcpsink, rtcpsrc, NULL);
-
-
-
 
   /* now link all to the rtpbin, start by getting an RTP sinkpad for session 0 */
   sinkpad = gst_element_get_request_pad (rtpbin, "send_rtp_sink_0");
@@ -327,9 +296,8 @@ main (int argc,char* argv[])
 
   /* set the pipeline to playing */
   g_print ("starting sender pipeline\n");
- // push_timing=0;
-  gst_element_set_state (g_pipeline, GST_STATE_PLAYING);
-  
+  gst_element_set_state (g_pipeline, GST_STATE_NULL);
+
   /* print stats every second */
   g_timeout_add (10000, (GSourceFunc) print_stats, rtpbin);
 
