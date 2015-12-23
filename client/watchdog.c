@@ -43,6 +43,9 @@ char atcommand_to_server[MAXBUF];
 int atcommand_to_server_allmessage = 0;
 char atcommand_to_servermesg[BUFFER_SIZE];
 
+int return_flag = 0; //when we receive the return command ,we turn this falg to 1 12-18
+char return_command[MIN_COMMAND_LEN]; //when we receive the return command that from the server.at 12-18
+
 int g_gst_sockfd;
 struct sockaddr_in g_gst_server_addr;
 
@@ -69,6 +72,9 @@ struct sockaddr_in g_gst_server_addr;
 
     char *gpio_name3 = "128";//we use this gpio to the watchdog
     char *gpio_name4 = "129"; //open the watchdog 
+
+char g_user[16] = {"board1"};
+char g_passwd[16] = {"1"};
 
 enum{
 	START=0,
@@ -257,10 +263,12 @@ printf("$$$$$g_gst_sockfd is %d\n",g_gst_sockfd);
         printf("len = %d\n",len);
 
 
-				if(len > 0){
+				if(len > 0)
+				{
 					keepflag = 0;
 					int len_command;
-					if(len<=get_emptylen(&cbuffer)){
+					if(len<=get_emptylen(&cbuffer))
+					{
 						//the the empty len is enough,so write the buffer to the circular buffer
 						writecommand(buffer,&cbuffer,len);
 					}
@@ -275,20 +283,20 @@ printf("$$$$$g_gst_sockfd is %d\n",g_gst_sockfd);
 				}
 				else
 				{
-									sleep(3);
-            			state_processing_fail++;
-            			if(state_processing_fail > 10) 
-            			{
-							if(stop_stream_flag != 0)
-							{					
-								stop_stream();
-							}
-            				state=START;
-            				printf("we switch to START state because we cannot receive message from server\n");
-            				restart_flag = 1;
-            				break;
-            			}
-							printf("Failed to receive the message! \n");
+					sleep(3);
+            		state_processing_fail++;
+            		if(state_processing_fail > 10) 
+            		{
+						if(stop_stream_flag != 0)
+						{					
+							stop_stream(sockfd);
+						}
+            			state=START;
+            			printf("we switch to START state because we cannot receive message from server!!\n");
+            			restart_flag = 1;
+            			break;
+            		}
+					printf("Failed to receive the message! \n");
 				}
 			}
 		    
@@ -371,14 +379,23 @@ void * operation(void * arg)
 	char command[] = {0xF2,0x08,0x05,0xF1,0xF0};//faild
 	char command1[] = {0xF2,0x08,0x05,0x01,0x00};//success
 	char gst_start_command[]={114,0x0a,0x0d};//114:'r', stands for "run"
+	char gst_start_command0[30];
 	stop_stream_flag = 1; //when we start the stream .we turn the flag to 1
 	int status,ret;
+	static int push_times=0;
 	int val;
 		
 		printf("*****************sockfd:%d\n",sockfd);
 		system(" /etc/init.d/rsyslog stop ");
-	
+	  if(push_times==0){
+	  	strcpy(gst_start_command0,g_user);	
+	  	ret = sendto(g_gst_sockfd,gst_start_command0,strlen(gst_start_command0)+1,0,	(struct sockaddr*)&g_gst_server_addr,sizeof(struct sockaddr_in));
+	  }
+	  else{	  	
 		ret=sendto(g_gst_sockfd,gst_start_command,3,0,(struct sockaddr*)&g_gst_server_addr,sizeof(struct sockaddr_in));
+		}
+		push_times++; 
+		
 printf("$$$$$g_gst_sockfd is %d,ret is %d\n",g_gst_sockfd,ret);
 		if(ret>=0)
 		{
@@ -392,6 +409,16 @@ printf("$$$$$g_gst_sockfd is %d,ret is %d\n",g_gst_sockfd,ret);
 			send(sockfd,command,5,0);
 		}
 		
+		sleep(60);
+		if(stop_stream_flag != 0)
+		{
+		    printf("the stream is pushing!!\n");
+		    stop_stream(sockfd);
+		}
+		else
+		{
+		    printf("the stream is stopped!!!\n");
+		}
 		pthread_exit((void *)1);
 }
 
@@ -819,15 +846,11 @@ int login_c(int fd)
 {
 	int sockfd = fd;
 	char command[40];
-//	char user[16] = {0};
-//	char passwd[16] = {0};
-	char user[16] = {"board1"};
-	char passwd[16] = {"1"};
 
 	char checksum = 0x00;
 	int i; 
 
-	sprintf(command, "%c%c%c%-16s%-16s",0xF2,0x06,0x24,user,passwd);
+	sprintf(command, "%c%c%c%-16s%-16s",0xF2,0x06,0x24,g_user,g_passwd);
 
 	for( i=0;i<35;i++ )
 		checksum += command[i];
@@ -939,11 +962,17 @@ printf("\n");
 					else if(buffer[1] == 0x10){ //the command is to check the flow,then the globle is change
 						check_flow = 1;
 					}
-                    	else if(buffer[1] == 0x11){
-                        	remote(sockfd);
-                    	}
+                    else if(buffer[1] == 0x11){
+                        remote(sockfd);
+                    }
 					else if(buffer[1] == 0x12){
 						closeremote(sockfd);
+					}
+
+					else if(buffer[1] == 0x13){ //this command is return the command 12-18
+						return_command[0] = buffer[3];  //if the return is not only,you can add in this
+						return_command[1] = '\0';
+						return_flag = 1;
 					}				
 					return 0;
 }
@@ -990,7 +1019,7 @@ void * send_gsm(void * arg)
         char buffer4[20] = {'C','X','L','L','\r',0x1A,'\r'};//send the message that check the stream
         char buffer5[20] = {'A','T','+','C','M','G','L','=','"','A','L','L','"','\r'}; //read the whole message
         char buffer6[20] = {'A','T','+','C','M','G','D','=','1',',','4','\r'}; //delete all the message
-	char buffer7[20] = {'A','T','E','0','\r'};
+		char buffer7[20] = {'A','T','E','0','\r'};
 		int checktotal = 0; //the num is that we check the mode is empty's times
 		portfd = 0;
 		stat = OPEN;
@@ -1072,15 +1101,27 @@ void * send_gsm(void * arg)
 				nwrite = write(portfd,buffer3,strlen(buffer3)); //send the number                                                                                                                       
 					printf("write the number len is:%d\n",nwrite);
 					printf("buffer3 is:%s\n",buffer3);
-				sleep(2);
+					sleep(2);
 					stat = DETAIL;
 					break;
 
-			case DETAIL: //CXLL 0x1A we can check the stream
-				nwrite = write(portfd,buffer4,strlen(buffer4)); //send the command that check the stream
+			case DETAIL: //CXLL 0x1A we can check the stream 12-18
+				if(check_flow == 1)
+				{
+					check_flow = 0;
+					nwrite = write(portfd,buffer4,strlen(buffer4)); //send the command that check the stream
 					printf("write the command len is:%d\n",nwrite);
 					printf("buffer4 is:%s\n",buffer4);
-				sleep(40);
+				}
+				else if (return_flag == 1) //12-18
+				{
+					char buffer8[10] = {return_command[0],0x1A,'\r'};
+					return_flag = 0;
+					nwrite = write(portfd,buffer8,strlen(buffer8));
+					printf("write the comand len is :%d\n",nwrite);
+					printf("buffer8 is :%s\n",buffer8);
+				}
+					sleep(40);
 					stat = CHECK;
 					break;
 			
@@ -1182,23 +1223,23 @@ void * send_gsm(void * arg)
             }
 
 		case WAIT: //we check the message mode ,if the mode is empty ,jump it
-				if(check_flow == 1)
-				{  //when we receive the command to check flow
-					check_flow = 0;
+				if(check_flow == 1 || return_flag == 1) ////when we receive the command to check flow 12-18
+				{  
+				//	check_flow = 0;
 					stat = SENDNUM;
 					break;
-                	}
-                	else
-                	{
-                        sleep(30);
-                printf("##################checktotal=%d\n",checktotal);
-                        if(checktotal > 2880){ //when we check the mode 1440 times(every time is 60',total is a day) is empty we sent the message to 10010
+                }
+                else
+                {
+                 	sleep(30);
+                	printf("##################checktotal=%d\n",checktotal);
+                    if(checktotal > 2880){ //when we check the mode 1440 times(every time is 60',total is a day) is empty we sent the message to 10010
                         stat = SENDNUM;
                         break;
                    }
-                  stat = CHECK;
+                  	stat = CHECK;
 		    		sleep(2);
-                  break;
+                  	break;
                 }
 
 		default:
@@ -1242,12 +1283,13 @@ int getcommand( char buffer[], struct circular_buffer *cbuffer, int len)
 	char ch;
 	int cbuflen = 2*MAXBUF - cbuffer->empty_len;//the effective character on the circular buffer
 	if(cbuflen <= 0)				//没有有效数据；
-	return -1;
+		return -1;
 //printf("\nread_pos:%d\n",cbuffer->read_pos); 
 //printf("empty_len:%d\n",cbuffer->empty_len);
 
 	//searching the sync word
-	for(i=0;i<cbuflen;i++) {
+	for(i=0;i<cbuflen;i++) 
+	{
 		ch = cbuffer->buf[cbuffer->read_pos];
 		if(ch == 0xF1)	
 			break;
@@ -1256,8 +1298,7 @@ int getcommand( char buffer[], struct circular_buffer *cbuffer, int len)
 			cbuffer->read_pos++;
 			if(cbuffer->read_pos >= 2*MAXBUF)
 				cbuffer->read_pos = 0;
-			cbuffer->empty_len++;  
-	//		printf("empty_len1:%d\n",cbuffer->empty_len); 
+			cbuffer->empty_len++;   
 			if(cbuffer->empty_len == 2*MAXBUF)
 				return -1;
         	}
@@ -1265,7 +1306,6 @@ int getcommand( char buffer[], struct circular_buffer *cbuffer, int len)
     
 	cbuflen = 2*MAXBUF - cbuffer->empty_len;//the effective character on the circular buffer
 	command_len = cbuffer->buf[(cbuffer->read_pos+2)%(MAXBUF*2)];//the length of this command
-//	printf("command_len:%3d  cbuflen:%3d\n", command_len, cbuflen);
 	if(cbuflen < MIN_COMMAND_LEN)				//uncomplete command remains on the circular buffer
 		return -1;
 
@@ -1277,7 +1317,6 @@ int getcommand( char buffer[], struct circular_buffer *cbuffer, int len)
 			cbuffer->read_pos = 0;
 		
 		cbuffer->empty_len++;
-//		printf("empty_len2:%d\n",cbuffer->empty_len);
 		return 1;
 	}
 	
@@ -1292,7 +1331,6 @@ int getcommand( char buffer[], struct circular_buffer *cbuffer, int len)
 		
 		for(i=0;i<command_len;i++){				//copy the command;
 			buffer[i] = cbuffer->buf[cbuffer->read_pos];
-//	printf("%3x",buffer[i]);
 			
 			cbuffer->read_pos++;
 			if(cbuffer->read_pos >= 2*MAXBUF)
@@ -1302,15 +1340,11 @@ int getcommand( char buffer[], struct circular_buffer *cbuffer, int len)
 		
 		if(checksum_check(buffer, command_len) == 0) {			//校验和正确
 			cbuffer->empty_len += command_len;
-//			printf("empty_len3:%d\n",cbuffer->empty_len);
 			return command_len;
 		}
 		else {													//校验和错误，恢复读指针；
 			cbuffer->read_pos = read_pos_backup;
-//	printf("read_pos(checksum_check fail):%d\n",cbuffer->read_pos);
-//	printf("CHECKSUM ERROR!\n");
 			cbuffer->empty_len++;
-//			printf("empty_len4:%d\n",cbuffer->empty_len);
 			return 1;
 		}
 	}
@@ -1464,7 +1498,7 @@ run:
         perror("falied open gpio value\n");
         goto err_open_value;
     }
-    sprintf(bu,"%d",a);
+    sprintf(bu,"%d",b);
     write(fd_value,bu,1);
 
     err_open_class:
