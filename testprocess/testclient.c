@@ -25,6 +25,9 @@
 #define count 8
 #define proxyhost "123.57.63.122"
 #define proxyport "9736"
+int k;
+int start_stream = 0;
+int stop_stream = 0;
 
 struct job
 {
@@ -317,6 +320,8 @@ void* work(void* arg)  //线程真正要执行的函数（thredpool_add_job加�
     char buffer[MAXBUF] = {0}; //receive the command
     int keepflag = 0;
     char heartbeat[] = {0xF2,0x07,0x05,0x01,0xFF};
+
+
     while(1)
     {
         switch(state)
@@ -379,7 +384,7 @@ void* work(void* arg)  //线程真正要执行的函数（thredpool_add_job加�
                 if (sockfd > maxfd)
                     maxfd = sockfd;
 
-                tv.tv_sec = 5;//if server don't send any commnad to us within 5s, then we send a hearbeat to the server///////////////////
+                tv.tv_sec = 10;//if server don't send any commnad to us within 5s, then we send a hearbeat to the server///////////////////
                 tv.tv_usec = 0;
 
                 retval = select(maxfd+1, &rfds, NULL, NULL, &tv);
@@ -433,7 +438,7 @@ void* work(void* arg)  //线程真正要执行的函数（thredpool_add_job加�
 
             case HEARTBEAT:
                 signal(SIGPIPE, SIG_IGN);
-                len = send(sockfd, heartbeat, strlen(heartbeat), 0);
+                len = send(sockfd, heartbeat, /*strlen(heartbeat)*/5, 0);
                 if (len < 0)
                 {
                     printf("failed to send heartbeat !\n");//in this case, we also add keepflag by 1,to switch the state to START
@@ -495,6 +500,7 @@ login_client(int fd,int y)
     char checksum = 0x00; //校验和
     char command[40]; //登录的命令长度是36
     int j;
+    k = y;
     sprintf(command,"%c%c%c%-16s%-16s",0xF2,0x06,0x24,server[y-1].name,server[y-1].passwd);
     for(j=0;j<35;j++)
         checksum += command[j];
@@ -524,29 +530,22 @@ for(i=0;i<buffer[2];i++)
 }
 printf("\n");
 */
+
                     printf("command is 0x0%x\n",buffer[1]); //show the command character
-/*
+
                     if(buffer[1] == 0x01){
                         switch(buffer[3]){
                             case 0x01:
                                 up(sockfd);
-                                usleep(300000);
-                                stop(sockfd);
                                 break;
                             case 0x02:
                                 down(sockfd);
-                                usleep(300000);
-                                stop(sockfd);
                                 break;
                             case 0x03:
                                 left(sockfd);
-                                usleep(300000);
-                                stop(sockfd);   
                                 break;
                             case 0x04:
                                 right(sockfd);
-                                usleep(300000);
-                                stop(sockfd);
                                 break;
                         }
                     }         //变倍长 变倍短
@@ -554,13 +553,9 @@ printf("\n");
                         switch(buffer[3]){
                             case 0x01:
                                 zoomlong(sockfd);//变倍长
-                                usleep(300000);
-                                stop(sockfd);
                                 break;
                             case 0x02:
                                 zoomshort(sockfd);//变倍短
-                                usleep(300000);
-                                stop(sockfd);
                                 break;
                         }
                     }//处理聚焦近，远
@@ -568,31 +563,30 @@ printf("\n");
                         switch(buffer[3]){
                             case 0x01:
                                 focusclose(sockfd);
-                                usleep(300000);
-                                stop(sockfd);
                                 break;
                             case 0x02:
                                 focusfar(sockfd);
-                                usleep(300000);
-                                stop(sockfd);
                                 break;
                         }   
                     }//stop the camera's up down left right and so on
                     else if(buffer[1] == 0x05){
                         stop(sockfd);
                     }//add the keepalive
-*/
+
                     if(buffer[1] == 0x07)
                     {
                         keepalive();//just print a message
                     }
-/*
+
                     else if (buffer[1] == 0x08){
-                        start_stream(sockfd);
+                        start_stream = 1;
+                        start_stop_stream(sockfd);
                     }
                     else if (buffer[1] == 0x09){
-                        stop_stream(sockfd);
+                        stop_stream = 1;
+                        start_stop_stream(sockfd);
                     }
+/*
                     else if(buffer[1] == 0x10){ //the command is to check the flow,then the globle is change
                         check_flow = 1;
                     }
@@ -614,3 +608,256 @@ int keepalive()
         printf("%s", ctime(&timep));
         printf("HA HA HA HA the server is alive\n\n");
 }
+
+int up(int fd)
+{
+    int sockfd = fd;
+    char command[] = {0xF2,0x01,0x05,0xF1,0xE9};//faild
+    char command1[] = {0xF2,0x01,0x05,0x01,0xF9};//success
+    send(sockfd,command1,sizeof(command1),0);
+    printf("there is no camera,BUT TEST UP SUCCESS!\n");
+    return 0;
+}
+
+
+int down(int fd)
+{
+    int sockfd = fd;
+    char command[] = {0xF2,0x01,0x05,0xF2,0xEA};//faild
+    char command1[] = {0xF2,0x01,0x05,0x02,0xFA};//success
+    send(sockfd,command1,sizeof(command1),0);
+    printf("there is no camera,BUT TEST DOWN SUCESS!\n");
+    return 0;
+}
+
+int left(int fd)
+{
+    int sockfd = fd;
+    char command[] = {0xF2,0x01,0x05,0xF3,0xEB};
+    char command1[] = {0xF2,0x01,0x05,0x03,0xFB};
+    send(sockfd,command1,sizeof(command1),0);
+    printf("there is no camera,BUT TEST LEFT SUCESS!\n");
+    return 0;
+}
+
+
+int right(int fd)
+{
+    int sockfd = fd;
+    char command[] = {0xF2,0x01,0x05,0xF4,0xEC};
+    char command1[] = {0xF2,0x01,0x05,0x04,0xFC};
+    send(sockfd,command1,sizeof(command1),0);
+    printf("there is no camera,BUT TEST RIGHT SUCESS!\n");
+    return 0;
+}
+
+
+int zoomshort(int fd)
+{
+    int sockfd = fd;
+    char command[] = {0xF2,0x02,0x05,0xF2,0xEB};//faild
+    char command1[] = {0xF2,0x02,0x05,0x02,0xFB};//success
+    send(sockfd,command1,sizeof(command1),0);
+    printf("there is no camera,BUT TEST ZOOMSHORT SUCESS!\n");
+    return 0;
+}
+
+
+int zoomlong(int fd)
+{
+    int sockfd = fd;
+    char command[] = {0xF2,0x02,0x05,0xF1,0xEA};//faild
+    char command1[] = {0xF2,0x02,0x05,0x01,0xFA};//success
+    send(sockfd,command1,sizeof(command1),0);
+    printf("there is no camera,BUT TEST ZOOMLONG UUCESS!\n");
+    return 0;
+}
+
+
+int focusclose(int fd)
+{
+    int sockfd = fd;
+    char command[] = {0xF2,0x03,0x05,0xF1,0xEB};//faild
+    char command1[] = {0xF2,0x03,0x05,0x01,0xFB};//success
+    send(sockfd,command1,sizeof(command1),0);
+    printf("there is no camera,BUT TEST FOCUSCLOSE SUCESS!\n");
+    return 0;
+}
+
+
+int focusfar(int fd)
+{
+    int sockfd = fd;
+    char command[] = {0xF2,0x03,0x05,0xF2,0xEC};//faild
+    char command1[] = {0xF2,0x03,0x05,0x02,0xFC};//success  
+    send(sockfd,command1,sizeof(command1),0);
+    printf("there is no camera,BUT TEST FOCUSFAR SUCESS!\n");
+    return 0;
+}
+
+
+int stop(int fd)
+{
+    int sockfd = fd;
+    char command[] = {0xF2,0x05,0x05,0xF1,0xED};//faild
+    char command1[] = {0xF2,0x05,0x05,0x01,0xFD};//success
+    send(sockfd,command1,sizeof(command1),0);
+    printf("there is no camera,BUT TEST STOP SUCESS!\n");
+    return 0;
+}
+
+
+int start_stop_stream(int fd)
+{
+
+
+    pid_t pid_gst;
+    int  g_pipefd[2];
+    if(pipe(g_pipefd) < 0) //create the pipe
+    {
+        printf("create pipe error\n");
+        return 0;
+    }
+
+    if((pid_gst=fork())<0)
+    {
+        printf("fork error\n");
+    }
+    else if(pid_gst == 0) // is child;
+    {
+        close(g_pipefd[1]);//close the child's write end
+        if(g_pipefd[0] != STDIN_FILENO)
+        {
+            if(dup2(g_pipefd[0],STDIN_FILENO) != STDIN_FILENO) //copy the stdin to the child's read 
+            {
+                printf("dup2 error to stdin\n");
+            }
+            close(g_pipefd[0]);//this time the new g_pipefd[0] is stdin,we close the old g_pipefd[0]    
+        }
+        execl("/home/media/work/videopush.out","videopush.out",server[k-1].name,(char*)0);//videopush.out will modify the udp port according to the username.
+    }
+  //parent
+    close(g_pipefd[0]);//close the parent's read end
+
+    int sockfd = fd;
+    int ret;
+    char command[] = {0xF2,0x08,0x05,0xF1,0xF0};//faild
+    char command1[] = {0xF2,0x08,0x05,0x01,0x00};//success
+    char gst_start_command[]={114,0x0a,0x0d};//114:'r', stands for "run"
+
+    char command2[] = {0xF2,0x09,0x05,0xF1,0xF1};//faild
+    char command3[] = {0xF2,0x09,0x05,0x01,0x01};//success
+    char gst_stop_command[]={115,0x0a,0x0d};//115:'s', stands for "stopping"
+
+//    err = system(" /home/media/TEST/start_testsrc.sh & ");
+    if(start_stream = 1)
+    {
+        start_stream = 0;
+        ret = write(g_pipefd[1],gst_start_command,3); //the parents' process through the g_pipifd[1] to write the command to the chiald's process
+        if(ret>=0)
+        {
+            printf("start the stream successful\n");
+            send(sockfd,command1,5,0);
+       // startstreamgpio();
+        }
+        else
+        {
+            printf("start the stream faild\n");
+            send(sockfd,command,5,0);
+        } 
+    }
+    else if(stop_stream = 1)
+    {
+        stop_stream = 0;
+        ret = write(g_pipefd[1],gst_stop_command,3);
+        if(ret>=0)
+        {
+            printf("stop the stream successful\n");
+            send(sockfd,command3,5/*sizeof(command1)*/,0);
+        }
+        else
+        {
+            printf("stop the stream is faild\n");
+            send(sockfd,command2,5,0);
+        }
+    }
+/*
+    if(err == -1)
+    {
+        send(sockfd,command,5,0);
+        printf("start stream is error\n");
+    }
+    else
+    {
+        send(sockfd,command1,5,0);
+        printf("start stream is SUCCESS\n");
+    }
+*/    
+    return 0;
+}
+
+#if 0
+int stop_stream(int fd)
+{
+
+    pid_t pid_gst;
+    int  g_pipefd[2];
+    if(pipe(g_pipefd) < 0) //create the pipe
+    {
+        printf("create pipe error\n");
+        return 0;
+    }
+
+    if((pid_gst=fork())<0)
+    {
+        printf("fork error\n");
+    }
+    else if(pid_gst == 0) // is child;
+    {
+        close(g_pipefd[1]);//close the child's write end
+        if(g_pipefd[0] != STDIN_FILENO)
+        {
+            if(dup2(g_pipefd[0],STDIN_FILENO) != STDIN_FILENO) //copy the stdin to the child's read 
+            {
+                printf("dup2 error to stdin\n");
+            }
+            close(g_pipefd[0]);//this time the new g_pipefd[0] is stdin,we close the old g_pipefd[0]    
+        }
+        execl("/home/media/work/videopush.out","videopush.out",server[k-1].name,(char*)0);//videopush.out will modify the udp port according to the username.
+    }
+  //parent
+    close(g_pipefd[0]);//close the parent's read end
+
+
+    int ret;
+    int sockfd = fd;
+    char command[] = {0xF2,0x09,0x05,0xF1,0xF1};//faild
+    char command1[] = {0xF2,0x09,0x05,0x01,0x01};//success
+    char gst_stop_command[]={115,0x0a,0x0d};//115:'s', stands for "stopping"
+//    err = system(" /home/media/TEST/stop_stream.sh & ");
+    ret = write(g_pipefd[1],gst_stop_command,3);
+    if(ret>=0)
+    {
+        printf("stop the stream successful\n");
+        send(sockfd,command1,5/*sizeof(command1)*/,0);
+    }
+    else
+    {
+        printf("stop the stream is faild\n");
+        send(sockfd,command,5,0);
+    }
+ /*   
+    if(err == -1)
+    {
+        send(sockfd,command,5,0);
+        printf("stop stream is error\n");
+    }
+    else
+    {
+        send(sockfd,command1,5,0);
+        printf("stop stream is SUCCESS\n");
+    }
+*/    
+    return 0;
+}
+#endif
