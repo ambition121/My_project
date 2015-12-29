@@ -1,0 +1,1 @@
+extern char between_character(char buffer[],char strout[], char strin[],char out[]); //get the string between strbegin and strend character
